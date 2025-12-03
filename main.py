@@ -4,7 +4,6 @@ st.set_page_config(page_title="Orçamento NT Festas", page_icon="🎈", layout="
 
 # --- 1. BANCO DE DADOS INTELIGENTE ---
 
-# Categorias e seus Temas
 CATEGORIAS_TEMAS = {
     "Infantil Masculino": ["Vingadores", "Homem Aranha", "Grêmio", "Inter", "Futebol", "Patrulha Canina",
                            "Personalizado"],
@@ -16,14 +15,36 @@ CATEGORIAS_TEMAS = {
     "Corporativo": ["Cores da Empresa", "Natal", "Halloween", "Personalizado"]
 }
 
-# Definição do que vem em cada Nível de Kit
+# --- LISTA MESTRA DE PREÇOS ---
+ACERVO_COMPLETO = {
+    "Trio de Cilindros (com capas)": 120.00,
+    "Mesa Principal Retangular/Carroça": 150.00,
+    "Trio de Mesas Sextavadas/Cubos": 120.00,
+    "Mesa Auxiliar Pequena": 40.00,
+    "Painel Redondo (Estrutura + Capa)": 80.00,
+    "Painel Romano / Ripado": 100.00,
+    "Painel Retangular / Muro Inglês": 90.00,
+    "Arco de Ferro para Balões": 30.00,
+    "Tapete Simples (Cor Única)": 30.00,
+    "Tapete Premium (Sublimado/Grama/Pelúcia)": 50.00,
+    "Display de Chão (Personagem MDF)": 20.00,
+    "Kit Boleiras e Bandejas (10 peças)": 60.00,
+    "Kit Boleiras e Bandejas (20 peças)": 100.00,
+    "Vaso com Arranjo de Flores (Permanente)": 35.00,
+    "Personagens de Mesa (Feltro/Biscoito/Resina) - Unid": 15.00,
+    "Bolo Fake": 30.00,
+    "Neon LED (Happy Birthday/Idade/Asas)": 80.00,
+    "Iluminação Cênica (Refletor)": 25.00,
+    "Número Led de Chão": 50.00
+}
+
 ESTRUTURA_KITS = {
     "Básico": {
         "preco": 280.00,
         "descricao": [
-            "1 Mesa Principal ou 3 Cilindros com Capas do Tema",
-            "1 Painel Redondo com Capa do Tema",
-            "10 Peças de Mesa (Boleiras/Bandejas nas cores do tema)",
+            "1 Mesa Principal ou 3 Cilindros com Capas",
+            "1 Painel Redondo com Capa",
+            "10 Peças de Mesa (Boleiras/Bandejas)",
             "1 Tapete Simples"
         ]
     },
@@ -31,35 +52,20 @@ ESTRUTURA_KITS = {
         "preco": 450.00,
         "descricao": [
             "Trio de Cilindros + 1 Mesa Auxiliar",
-            "Painel Duplo (Romano + Redondo com Capas)",
-            "Displayers de Chão e Mesa (Personagens)",
-            "20 Peças de Mesa (Louças, Vasos com flores permanentes)",
-            "Iluminação Cênica (Símbolo ou Neon simples)",
-            "Tapete Premium ou Grama Sintética"
+            "Painel Duplo (Romano + Redondo)",
+            "Displayers de Chão e Mesa",
+            "20 Peças de Mesa (Louças, Vasos, Flores)",
+            "Iluminação (Neon ou Refletor)",
+            "Tapete Premium"
         ]
-    },
-    "Personalizado": {
-        "preco": 0.00,  # Valor será definido manualmente ou por soma de itens
-        "descricao": ["Montagem exclusiva conforme itens selecionados abaixo."]
     }
 }
 
-# Detalhes Específicos dos Temas
 DETALHES_TEMAS = {
-    "Vingadores": "Cores: Vermelho/Azul. Itens: Bonecos Feltro (Thor, Hulk), Prédios, Escudo Capitão América.",
-    "Moranguinho": "Cores: Vermelho/Verde/Rosa. Itens: Bonecas Moranguinho, Cestinha de Morangos, Painel Jardim.",
-    "Grêmio": "Cores: Azul/Preto/Branco. Itens: Taças, Lobo, Bandeira.",
-    "Barbie": "Cores: Rosa Pink/Branco. Itens: Silhueta Barbie, Caixa Boneca, Bolsas decorativas."
-}
-
-# Itens Avulsos
-ITENS_AVULSOS = {
-    "Trio de Mesas Sextavadas": 120.00,
-    "Neon LED": 80.00,
-    "Painel Romano Extra": 100.00,
-    "Arranjo de Flores Extra": 40.00,
-    "Personagem Extra (Feltro/Resina)": 30.00,
-    "Mesa de Madeira Maciça": 150.00
+    "Vingadores": "Cores: Vermelho/Azul. Itens: Bonecos Feltro (Thor, Hulk), Prédios.",
+    "Moranguinho": "Cores: Vermelho/Verde. Itens: Bonecas, Cestinha.",
+    "Grêmio": "Cores: Azul/Preto/Branco. Itens: Taças, Bandeira.",
+    "Barbie": "Cores: Rosa Pink. Itens: Silhueta Barbie, Bolsas."
 }
 
 # --- BARRA LATERAL (CUSTOS) ---
@@ -82,8 +88,6 @@ cidade = col_cli3.selectbox("Cidade", ["Esteio", "Canoas", "Sapucaia", "POA", "O
 # --- PASSO 2: DEFINIÇÃO DO TEMA ---
 st.header("1. Estilo e Tema")
 col_tema1, col_tema2 = st.columns(2)
-
-# Filtro em Cascata
 categoria_sel = col_tema1.selectbox("Tipo de Festa", list(CATEGORIAS_TEMAS.keys()))
 temas_disponiveis = CATEGORIAS_TEMAS[categoria_sel]
 tema_sel = col_tema2.selectbox("Qual o Tema?", temas_disponiveis)
@@ -91,56 +95,43 @@ tema_sel = col_tema2.selectbox("Qual o Tema?", temas_disponiveis)
 # --- PASSO 3: ESCOLHA DO KIT ---
 st.header("2. Composição do Kit")
 
-# Seleção do Nível
 nivel_kit = st.radio("Selecione o Nível do Kit:", ["Básico", "Premium", "Montar Personalizado (Do Zero)"],
                      horizontal=True)
 
-# Lógica de Preço e Descrição Base
 if nivel_kit == "Montar Personalizado (Do Zero)":
-    kit_base_nome = "Personalizado"
-    preco_base = 0.00
-    itens_kit_descricao = []
+    st.markdown("### 🛠️ Monte o Kit Item por Item:")
+    itens_selecionados_pers = st.multiselect(
+        "Acervo Completo:",
+        options=list(ACERVO_COMPLETO.keys()),
+        placeholder="Clique para adicionar peças..."
+    )
+    preco_base = sum([ACERVO_COMPLETO[i] for i in itens_selecionados_pers])
+    itens_kit_descricao = itens_selecionados_pers
+    valor_adicionais = 0.0
+    itens_adicionais = []
+
 else:
     kit_base_nome = nivel_kit
     dados_kit = ESTRUTURA_KITS[nivel_kit]
     preco_base = dados_kit["preco"]
     itens_kit_descricao = dados_kit["descricao"]
 
-# --- PASSO 4: PERSONALIZAÇÃO E ADICIONAIS ---
-st.subheader("3. Personalização e Itens Extras")
-
-col_custom1, col_custom2 = st.columns([2, 1])
-
-with col_custom1:
-    st.info(f"📦 **Itens Padrão do Kit {kit_base_nome}:**")
-
-    # Se for personalizado do zero, não mostra lista padrão
-    if kit_base_nome != "Personalizado":
-        for item in itens_kit_descricao:
-            st.markdown(f"- {item}")
-
-    # Checkbox para alterar o padrão
-    alterou_padrao = False
-    obs_alteracao = ""
-    if kit_base_nome != "Personalizado":
-        alterar = st.checkbox("🔄 Cliente trocou algum item do padrão? (Ex: Mudou o tecido ou boleira)")
-        if alterar:
-            alterou_padrao = True
-            obs_alteracao = st.text_input("Descreva a troca (Ex: Trocou capa vermelha por azul):")
+    st.info(f"📦 **Itens inclusos no {nivel_kit}:**")
+    for item in itens_kit_descricao:
+        st.markdown(f"- {item}")
 
     st.markdown("---")
-    st.write("**Adicionar Itens Extras:**")
-    itens_adicionais = st.multiselect("Selecione para somar ao valor:", list(ITENS_AVULSOS.keys()))
+    st.write("**Deseja adicionar itens extras ao kit padrão?**")
+    itens_adicionais = st.multiselect("Selecione itens avulsos:", list(ACERVO_COMPLETO.keys()))
+    valor_adicionais = sum([ACERVO_COMPLETO[i] for i in itens_adicionais])
 
-# Cálculo dos Adicionais
-valor_adicionais = sum([ITENS_AVULSOS[i] for i in itens_adicionais])
-
-with col_custom2:
-    st.metric("Valor Base Kit", f"R$ {preco_base:.2f}")
-    st.metric("Valor Adicionais", f"R$ {valor_adicionais:.2f}")
+obs_alteracao = ""
+if nivel_kit != "Montar Personalizado (Do Zero)":
+    if st.checkbox("🔄 Houve troca de itens do padrão? (Ex: Cor da capa)"):
+        obs_alteracao = st.text_input("Descreva a alteração:")
 
 # --- PASSO 5: LOGÍSTICA ---
-st.header("4. Logística e Serviços")
+st.header("3. Logística e Serviços")
 tipo_entrega = st.radio("Logística:", ["Pegue e Monte", "Nós Levamos e Montamos"])
 
 custo_frete = 0.0
@@ -156,70 +147,81 @@ if tipo_entrega == "Nós Levamos e Montamos":
     horas = c2.number_input("Horas Totais (Montar+Desmontar)", value=3.0)
     custo_mao_obra = horas * valor_hora
 
-    # Balões
-    if st.checkbox("Adicionar Balões?"):
-        tipo_balao = st.selectbox("Tipo", ["Arco Simples", "Orgânico", "Orgânico Premium"])
-        metros = st.slider("Metros", 2.0, 5.0, 2.5)
-        tab_balao = {"Arco Simples": 40, "Orgânico": 80, "Orgânico Premium": 120}
-        custo_baloes = metros * tab_balao[tipo_balao]
-        desc_balao = f"Arte com Balões: {tipo_balao} ({metros}m)"
+st.markdown("### 🎈 Arte com Balões")
+if st.checkbox("Adicionar Balões ao Pedido?"):
+    if tipo_entrega == "Pegue e Monte":
+        st.warning("⚠️ Atenção: Certifique-se de que o arco montado cabe no veículo de retirada.")
 
-# --- CÁLCULO FINAL E PAGAMENTO ---
-total_geral = preco_base + valor_adicionais + custo_frete + custo_mao_obra + custo_baloes + taxa_higienizacao
+    tipo_balao = st.selectbox("Tipo", ["Arco Simples", "Orgânico", "Orgânico Premium"])
+    metros = st.slider("Metros", 2.0, 5.0, 2.5)
+    tab_balao = {"Arco Simples": 40, "Orgânico": 80, "Orgânico Premium": 120}
+    custo_baloes = metros * tab_balao[tipo_balao]
+    desc_balao = f"Arte com Balões: {tipo_balao} ({metros}m)"
 
-# Cálculos de Sinal e Restante
-valor_sinal = total_geral * 0.30
-valor_restante = total_geral - valor_sinal
+# --- CÁLCULO FINAL E DESCONTO ---
+st.header("4. Fechamento e Valores")
 
-# --- TEXTO INTELIGENTE PARA WHATSAPP ---
+# Somatório Bruto
+total_bruto = preco_base + valor_adicionais + custo_frete + custo_mao_obra + custo_baloes + taxa_higienizacao
 
-# Construindo a descrição detalhada do tema
-detalhe_visual = DETALHES_TEMAS.get(tema_sel, f"Itens temáticos e cores do tema {tema_sel}.")
+# Campo de Desconto
+col_desc1, col_desc2 = st.columns([1, 3])
+percentual_desconto = col_desc1.number_input("Aplicar Desconto (%)", 0.0, 100.0, 0.0, step=1.0)
+valor_desconto = total_bruto * (percentual_desconto / 100)
 
-# Construindo a lista final de itens para o texto
+total_liquido = total_bruto - valor_desconto
+valor_sinal = total_liquido * 0.30
+valor_restante = total_liquido - valor_sinal
+
+# --- GERAÇÃO DO TEXTO ---
+detalhe_visual = DETALHES_TEMAS.get(tema_sel, f"Tema: {tema_sel}")
+
 lista_final_texto = ""
-
-if kit_base_nome == "Personalizado":
-    lista_final_texto += "- Montagem Exclusiva Personalizada\n"
-else:
-    lista_final_texto += f"- ESTRUTURA {kit_base_nome.upper()}:\n"
+if nivel_kit == "Montar Personalizado (Do Zero)":
+    lista_final_texto += "- KIT PERSONALIZADO (ITENS SELECIONADOS):\n"
     for i in itens_kit_descricao:
         lista_final_texto += f"  • {i}\n"
-
-if alterou_padrao:
-    lista_final_texto += f"⚠️ ALTERAÇÃO: {obs_alteracao}\n"
-
-if itens_adicionais:
-    lista_final_texto += "\n- ITENS ADICIONAIS:\n"
-    for i in itens_adicionais:
+else:
+    lista_final_texto += f"- ESTRUTURA {nivel_kit.upper()}:\n"
+    for i in itens_kit_descricao:
         lista_final_texto += f"  • {i}\n"
+    if obs_alteracao:
+        lista_final_texto += f"⚠️ OBS: {obs_alteracao}\n"
+    if itens_adicionais:
+        lista_final_texto += "\n- ITENS ADICIONAIS:\n"
+        for i in itens_adicionais:
+            lista_final_texto += f"  • {i}\n"
 
-# Texto Final
+# Inserção do Desconto no Texto
+linha_desconto = ""
+if valor_desconto > 0:
+    linha_desconto = f"\n🎁 *Desconto Especial ({percentual_desconto:.0f}%):* - R$ {valor_desconto:.2f}"
+
 texto_whats = f"""
 *ORÇAMENTO NT FESTAS* 🎈
-Olá *{nome_cliente}*! 
-Confira os detalhes da sua festa com o tema *{tema_sel}*.
+Olá *{nome_cliente}*!
+Segue o orçamento para o tema *{tema_sel}*.
 
 📅 Data: {data_evento} | 📍 {cidade}
-🏷️ Categoria: {categoria_sel}
 
-*COMPOSIÇÃO DO CENÁRIO:*
+*COMPOSIÇÃO:*
 {detalhe_visual}
 
 {lista_final_texto}
 {f"- {desc_balao}" if custo_baloes > 0 else ""}
 
 *SERVIÇOS:*
-- Higienização das peças
-{f"- Frete e Logística (Entrega/Retirada)" if custo_frete > 0 else "- Cliente retira e devolve (Pegue e Monte)"}
-{f"- Montagem e Desmontagem Profissional" if custo_mao_obra > 0 else ""}
+- Higienização e Embalagem
+{f"- Frete e Logística" if custo_frete > 0 else "- Cliente retira e devolve (Pegue e Monte)"}
+{f"- Montagem Profissional no Local" if custo_mao_obra > 0 else ""}
 
 -----------------------------
-*INVESTIMENTO TOTAL: R$ {total_geral:.2f}*
+*VALOR TOTAL: R$ {total_liquido:.2f}*
+{linha_desconto}
 -----------------------------
-💰 *FORMA DE PAGAMENTO:*
-✅ Sinal de Reserva (30%): R$ {valor_sinal:.2f}
-✅ Restante na data da festa: R$ {valor_restante:.2f}
+💰 *PAGAMENTO:*
+✅ Sinal Reserva (30%): R$ {valor_sinal:.2f}
+✅ Restante na data: R$ {valor_restante:.2f}
 
 Ficamos no aguardo!
 """
@@ -228,14 +230,29 @@ st.divider()
 col_res1, col_res2 = st.columns([3, 2])
 
 with col_res1:
-    st.subheader("📲 Visualização da Mensagem")
-    st.info("Clique no ícone de 'copiar' no canto superior direito da caixa abaixo 👇")
-    # O componente st.code cria automaticamente o botão de copiar
+    st.subheader("📲 Mensagem WhatsApp")
     st.code(texto_whats, language="markdown")
 
 with col_res2:
-    st.success(f"TOTAL: R$ {total_geral:.2f}")
-    st.write(f"Sinal (30%): R$ {valor_sinal:.2f}")
-    st.write(f"Restante (70%): R$ {valor_restante:.2f}")
+    st.subheader("📋 Resumo Detalhado")
+
+    # Detalhamento Visual dos Custos
+    st.write(f"📦 **Kit e Peças:** R$ {preco_base + valor_adicionais:.2f}")
+    if custo_baloes > 0:
+        st.write(f"🎈 **Balões:** R$ {custo_baloes:.2f}")
+
     st.markdown("---")
-    st.caption(f"Lucro Aprox. (desc. var.): R$ {total_geral - (custo_frete/2) - (custo_baloes*0.3):.2f}")
+    st.write("**Serviços Operacionais:**")
+    st.write(f"🧹 Higienização: R$ {taxa_higienizacao:.2f}")
+    if custo_frete > 0:
+        st.write(f"🚚 Frete: R$ {custo_frete:.2f}")
+    if custo_mao_obra > 0:
+        st.write(f"👷‍♀️ Montagem: R$ {custo_mao_obra:.2f}")
+
+    st.markdown("---")
+
+    if valor_desconto > 0:
+        st.write(f"Subtotal: R$ {total_bruto:.2f}")
+        st.error(f"Desconto ({percentual_desconto:.0f}%): - R$ {valor_desconto:.2f}")
+
+    st.success(f"### TOTAL FINAL: R$ {total_liquido:.2f}")
