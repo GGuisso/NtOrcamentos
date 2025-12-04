@@ -1,0 +1,12 @@
+# Arquivos de Sistema e Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# Arquivos Temporários Gerados
+*.pdf
+
+# Segredos do Streamlit (MUITO IMPORTANTE)
+.streamlit/secrets.toml
