@@ -357,10 +357,51 @@ col_res1, col_res2 = st.columns([3, 2])
 with col_res1:
     st.subheader("📲 Mensagem WhatsApp")
     st.code(texto_whats)
+
+# --- AQUI ESTÁ A MUDANÇA: RESUMO DETALHADO ---
 with col_res2:
-    st.subheader("📋 Resumo")
-    st.write(f"Kit: R$ {preco_base + valor_adicionais:.2f}")
-    if custo_baloes > 0: st.write(f"Balões: R$ {custo_baloes:.2f}")
+    st.subheader("📋 Demonstrativo")
+
+    # 1. Estrutura Principal
+    if nivel_kit == "Montar Personalizado (Do Zero)":
+        st.write(f"**Itens Selecionados:**")
+        for item in itens_selecionados_pers:
+            p = ACERVO_COMPLETO[item]
+            st.caption(f"- {item}: R$ {p:.2f}")
+    else:
+        st.write(f"**Kit {nivel_kit}:** R$ {preco_base:.2f}")
+
+    # 2. Adicionais
+    if itens_adicionais:
+        st.write("**Itens Extras:**")
+        for item in itens_adicionais:
+            p_item = ACERVO_COMPLETO[item]
+            st.caption(f"- {item}: R$ {p_item:.2f}")
+
+    # 3. Balões
+    if custo_baloes > 0:
+        st.write(f"**Balões:** R$ {custo_baloes:.2f}")
+        st.caption(f"  ({desc_balao})")
+
+    st.markdown("---")
+
+    # 4. Serviços Detalhados
+    st.write("**Taxas e Serviços:**")
+    st.caption(f"- Higienização: R$ {taxa_higienizacao:.2f}")
+
+    if custo_frete > 0:
+        st.caption(f"- Frete ({dist}km): R$ {custo_frete:.2f}")
+
+    if custo_mao_obra > 0:
+        st.caption(f"- Montagem ({horas}h): R$ {custo_mao_obra:.2f}")
+
+    st.markdown("---")
+
+    # 5. Totais
+    st.write(f"Subtotal: R$ {total_bruto:.2f}")
+    if valor_desconto > 0:
+        st.error(f"Desconto ({percentual_desconto:.0f}%): - R$ {valor_desconto:.2f}")
+
     st.success(f"### TOTAL: R$ {total_liquido:.2f}")
 
 # ==========================================
