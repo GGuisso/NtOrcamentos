@@ -192,7 +192,7 @@ ACERVO_COMPLETO = {
     "Trio de Mesas Sextavadas/Cubos": 120.00,
     "Mesa Auxiliar Pequena": 40.00,
     "Painel Redondo (Estrutura + Capa)": 80.00,
-    "Painel Romano / Ripado": 100.00,
+    "Painel Romano": 60.00,
     "Painel Retangular / Muro Inglês": 90.00,
     "Arco de Ferro para Balões": 30.00,
     "Tapete Simples (Cor Única)": 30.00,
@@ -205,7 +205,8 @@ ACERVO_COMPLETO = {
     "Bolo Fake": 30.00,
     "Neon LED (Happy Birthday/Idade/Asas)": 80.00,
     "Iluminação Cênica (Refletor)": 25.00,
-    "Número Led de Chão": 50.00
+    "Número Led de Chão": 50.00,
+    "Mesa Ripada": 60.00
 }
 
 ESTRUTURA_KITS = {
