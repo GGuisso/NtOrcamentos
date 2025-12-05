@@ -18,11 +18,36 @@ st.set_page_config(page_title="Orçamento NT Festas", page_icon="🎈", layout="
 
 SHEET_URL = st.secrets["SHEET_URL"]
 AUTENTIQUE_URL = "https://api.autentique.com.br/v2/graphql"
+VIACEP_URL = "https://viacep.com.br/ws/{}/json/"
 
 
 # ==========================================
 # CAMADA DE SERVIÇOS (BACKEND)
 # ==========================================
+
+class CepService:
+    """Gerencia consulta de endereço via CEP (ViaCEP)."""
+
+    @staticmethod
+    def consultar(cep: str) -> Optional[Dict[str, str]]:
+        """Consulta o CEP na API pública e retorna os dados."""
+        if not cep: return None
+        # Remove caracteres não numéricos
+        cep_limpo = "".join([c for c in cep if c.isdigit()])
+
+        if len(cep_limpo) != 8: return None
+
+        try:
+            response = requests.get(VIACEP_URL.format(cep_limpo), timeout=3)
+            if response.status_code == 200:
+                dados = response.json()
+                if "erro" in dados: return None
+                return dados
+            return None
+        except Exception as e:
+            print(f"Erro ao consultar CEP: {e}")
+            return None
+
 
 class GoogleSheetsService:
     """Gerencia toda a comunicação com o Google Sheets."""
@@ -159,14 +184,12 @@ class PDFGenerator:
             pdf.set_font("Arial", size=10)
             pdf.cell(190, 6, txt=cls._clean_text(f"LOCADOR: NT Festas Decorações"), ln=True)
 
-            # Monta string endereço cliente
             end_cli = f"{dados_cli['rua']}, {dados_cli['numero']} - {dados_cli['bairro']}, {dados_cli['cidade']} (CEP: {dados_cli['cep']})"
             pdf.cell(190, 6, txt=cls._clean_text(f"LOCATÁRIO: {dados_cli['nome']} | CPF: {dados_cli['cpf']}"), ln=True)
             pdf.cell(190, 6, txt=cls._clean_text(f"ENDEREÇO: {end_cli}"), ln=True)
             pdf.ln(2)
 
             # --- Bloco 2: Evento ---
-            # Monta string endereço evento
             end_evt = f"{dados_evt['rua']}, {dados_evt['numero']} - {dados_evt['bairro']}, {dados_evt['cidade']} (CEP: {dados_evt['cep']})"
 
             pdf.set_fill_color(240, 240, 240)
@@ -286,6 +309,13 @@ def init_session_state():
     if 'navegacao_atual' not in st.session_state: st.session_state['navegacao_atual'] = "📝 Novo Orçamento"
     if 'feedback_msg' not in st.session_state: st.session_state['feedback_msg'] = None
 
+    # Inicializa chaves de endereço vazias para evitar KeyError
+    keys_end = ["in_cli_rua", "in_cli_bairro", "in_cli_cidade", "in_cli_num",
+                "in_evt_rua", "in_evt_bairro", "in_evt_cidade", "in_evt_num",
+                "in_evt_cep", "in_cli_cep"]
+    for k in keys_end:
+        if k not in st.session_state: st.session_state[k] = ""
+
 
 def reset_form_state():
     """Limpa campos do formulário (incluindo novos campos)."""
@@ -298,11 +328,14 @@ def reset_form_state():
         "in_categoria", "in_tema", "in_kit",
         "in_itens_pers", "in_itens_add", "in_check_obs", "in_obs",
         "in_entrega", "in_dist", "in_horas", "in_check_balao",
-        "in_tipo_balao", "in_metros", "in_desc_perc"
+        "in_tipo_balao", "in_metros", "in_desc_perc",
+        "chk_mesmo_end"  # Chave do checkbox
     ]
     for k in keys:
         if k in st.session_state: del st.session_state[k]
     st.session_state['in_data'] = date.today()
+    # Re-inicializa chaves essenciais após o delete
+    init_session_state()
 
 
 def handle_feedback():
@@ -362,45 +395,75 @@ def render_form_orcamento(acervo, categorias, kits, detalhes):
         c2.button("📑 Usar como base (Duplicar)", on_click=_duplicar, use_container_width=True)
         st.markdown("---")
 
-    # --- 1. Dados Cadastrais (NOVO) ---
+    # --- FUNÇÕES DE CALLBACK PARA CEP E CÓPIA ---
+    def _buscar_cep_cli():
+        cep = st.session_state.get("in_cli_cep", "")
+        res = CepService.consultar(cep)
+        if res:
+            st.session_state["in_cli_rua"] = res.get("logradouro", "")
+            st.session_state["in_cli_bairro"] = res.get("bairro", "")
+            st.session_state["in_cli_cidade"] = res.get("localidade", "")
+            st.toast("Endereço do cliente encontrado!", icon="📍")
+        elif cep:
+            st.toast("CEP não encontrado ou inválido.", icon="⚠️")
+
+    def _buscar_cep_evt():
+        cep = st.session_state.get("in_evt_cep", "")
+        res = CepService.consultar(cep)
+        if res:
+            st.session_state["in_evt_rua"] = res.get("logradouro", "")
+            st.session_state["in_evt_bairro"] = res.get("bairro", "")
+            st.session_state["in_evt_cidade"] = res.get("localidade", "")
+            st.toast("Endereço do evento encontrado!", icon="📍")
+        elif cep:
+            st.toast("CEP não encontrado ou inválido.", icon="⚠️")
+
+    def _copiar_endereco():
+        """Copia os dados do cliente para o evento se o checkbox for marcado."""
+        if st.session_state.get("chk_mesmo_end"):
+            st.session_state["in_evt_cep"] = st.session_state.get("in_cli_cep", "")
+            st.session_state["in_evt_rua"] = st.session_state.get("in_cli_rua", "")
+            st.session_state["in_evt_num"] = st.session_state.get("in_cli_num", "")
+            st.session_state["in_evt_bairro"] = st.session_state.get("in_cli_bairro", "")
+            st.session_state["in_evt_cidade"] = st.session_state.get("in_cli_cidade", "")
+
+    # --- 1. Dados Cadastrais ---
     st.subheader("👤 Dados do Cliente")
     col_c1, col_c2 = st.columns([2, 1])
     nome = col_c1.text_input("Nome Completo", key="in_nome", disabled=bloqueado)
     cpf = col_c2.text_input("CPF", key="in_cpf", disabled=bloqueado)
 
     col_ce1, col_ce2, col_ce3, col_ce4, col_ce5 = st.columns([1, 2, 1, 1.5, 1.5])
-    cep_cli = col_ce1.text_input("CEP Cli.", key="in_cli_cep", disabled=bloqueado)
-    rua_cli = col_ce2.text_input("Rua", key="in_cli_rua", disabled=bloqueado)
-    num_cli = col_ce3.text_input("Nº", key="in_cli_num", disabled=bloqueado)
-    bairro_cli = col_ce4.text_input("Bairro", key="in_cli_bairro", disabled=bloqueado)
-    cid_cli = col_ce5.text_input("Cidade", key="in_cli_cidade", disabled=bloqueado)
+
+    # Campo CEP com Callback
+    cep_cli = col_ce1.text_input("CEP Cli.", key="in_cli_cep", on_change=_buscar_cep_cli, disabled=bloqueado)
+
+    # Value explicitamente vinculado para atualização visual
+    rua_cli = col_ce2.text_input("Rua", value=st.session_state.get("in_cli_rua", ""), key="in_cli_rua",
+                                 disabled=bloqueado)
+    num_cli = col_ce3.text_input("Nº", value=st.session_state.get("in_cli_num", ""), key="in_cli_num",
+                                 disabled=bloqueado)
+    bairro_cli = col_ce4.text_input("Bairro", value=st.session_state.get("in_cli_bairro", ""), key="in_cli_bairro",
+                                    disabled=bloqueado)
+    cid_cli = col_ce5.text_input("Cidade", value=st.session_state.get("in_cli_cidade", ""), key="in_cli_cidade",
+                                 disabled=bloqueado)
 
     st.subheader("📍 Local do Evento")
     col_ev0, col_ev_dup = st.columns([2, 1])
     data_evt = col_ev0.date_input("Data do Evento", value=date.today(), key="in_data", disabled=bloqueado)
 
-    # Checkbox para facilitar cópia (lógica visual)
-    usar_mesmo_end = col_ev_dup.checkbox("🏠 Mesmo endereço do cliente?", disabled=bloqueado)
+    # Checkbox com Callback de cópia
+    usar_mesmo_end = col_ev_dup.checkbox("🏠 Mesmo endereço do cliente?", key="chk_mesmo_end",
+                                         on_change=_copiar_endereco, disabled=bloqueado)
 
     col_ev1, col_ev2, col_ev3, col_ev4, col_ev5 = st.columns([1, 2, 1, 1.5, 1.5])
 
-    # Se checkbox marcado, usamos os dados do cliente como default (se o campo evento estiver vazio)
-    def get_val(key_target, key_source):
-        curr = st.session_state.get(key_target, "")
-        if usar_mesmo_end and not curr: return st.session_state.get(key_source, "")
-        return curr
-
-    cep_evt = col_ev1.text_input("CEP Evt.", value=get_val("in_evt_cep", "in_cli_cep") if usar_mesmo_end else None,
-                                 key="in_evt_cep", disabled=bloqueado)
-    rua_evt = col_ev2.text_input("Rua", value=get_val("in_evt_rua", "in_cli_rua") if usar_mesmo_end else None,
-                                 key="in_evt_rua", disabled=bloqueado)
-    num_evt = col_ev3.text_input("Nº", value=get_val("in_evt_num", "in_cli_num") if usar_mesmo_end else None,
-                                 key="in_evt_num", disabled=bloqueado)
-    bairro_evt = col_ev4.text_input("Bairro",
-                                    value=get_val("in_evt_bairro", "in_cli_bairro") if usar_mesmo_end else None,
-                                    key="in_evt_bairro", disabled=bloqueado)
-    cid_evt = col_ev5.text_input("Cidade", value=get_val("in_evt_cidade", "in_cli_cidade") if usar_mesmo_end else None,
-                                 key="in_evt_cidade", disabled=bloqueado)
+    # Campos de Evento
+    cep_evt = col_ev1.text_input("CEP Evt.", key="in_evt_cep", on_change=_buscar_cep_evt, disabled=bloqueado)
+    rua_evt = col_ev2.text_input("Rua", key="in_evt_rua", disabled=bloqueado)
+    num_evt = col_ev3.text_input("Nº", key="in_evt_num", disabled=bloqueado)
+    bairro_evt = col_ev4.text_input("Bairro", key="in_evt_bairro", disabled=bloqueado)
+    cid_evt = col_ev5.text_input("Cidade", key="in_evt_cidade", disabled=bloqueado)
 
     st.markdown("---")
 
@@ -458,7 +521,7 @@ def render_form_orcamento(acervo, categorias, kits, detalhes):
         custo_baloes = metros * {"Arco Simples": 40, "Orgânico": 80, "Orgânico Premium": 120}[tipo_b]
         desc_balao = f"Arte com Balões: {tipo_b} ({metros}m)"
 
-    # --- 4. Totais ---
+    # --- 4. Totais e Demonstrativo ---
     st.subheader("4. Fechamento e Valores")
     taxa_hig = st.session_state['cfg_taxa']
     bruto = preco_base + val_add + frete + mao_obra + custo_baloes + taxa_hig
@@ -521,7 +584,7 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
                     "status": "Aguardando" if not st.session_state['edit_id'] else status_atual,
                     "cliente": nome,
                     "data_evento": str(data_evt),
-                    "cidade": cid_evt,  # Cidade do evento
+                    "cidade": cid_evt,
                     "tema": tema_sel,
                     "total": liquido,
                     "dados_form": {k: st.session_state[k] for k in st.session_state if
@@ -547,13 +610,9 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
     with c_res2:
         st.subheader("📋 Demonstrativo")
 
-        # Cria uma "caixa" única para todo o resumo financeiro (Visual de Recibo)
         with st.container(border=True):
-
-            # --- SEÇÃO 1: PRODUTOS ---
             st.caption("📦 ITENS E KITS")
 
-            # Função auxiliar para criar linhas alinhadas (Texto na esq, Valor na dir)
             def linha_resumo(texto, valor, destaque=False):
                 c1, c2 = st.columns([3, 1])
                 c1.write(texto)
@@ -563,44 +622,31 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
                     c2.write(f"R$ {valor:.2f}")
 
             linha_resumo("Base do Kit", preco_base)
-
-            if val_add:
-                linha_resumo("Itens Extras", val_add)
-
-            if custo_baloes:
-                linha_resumo("Balões", custo_baloes)
+            if val_add: linha_resumo("Itens Extras", val_add)
+            if custo_baloes: linha_resumo("Balões", custo_baloes)
 
             st.markdown("---")
-
-            # --- SEÇÃO 2: SERVIÇOS (Compacto) ---
             st.caption("🛠️ TAXAS E SERVIÇOS")
 
-            # Aqui usamos 3 colunas pequenas, mas sem fonte gigante
             cs1, cs2, cs3 = st.columns(3)
             cs1.markdown(f"<small>Higienização</small><br>**R$ {taxa_hig:.2f}**", unsafe_allow_html=True)
             cs2.markdown(f"<small>Frete</small><br>**R$ {frete:.2f}**", unsafe_allow_html=True)
             cs3.markdown(f"<small>Montagem</small><br>**R$ {mao_obra:.2f}**", unsafe_allow_html=True)
 
             st.markdown("---")
-
-            # --- SEÇÃO 3: TOTAIS ---
             c_tot1, c_tot2 = st.columns([3, 2])
-
             c_tot1.write("Subtotal:")
             c_tot2.write(f"**R$ {bruto:.2f}**")
 
             if val_desc:
                 c_tot1.write("Desconto:")
-                c_tot2.markdown(f":red[- R$ {val_desc:.2f}]")  # Texto vermelho para desconto
+                c_tot2.markdown(f":red[- R$ {val_desc:.2f}]")
 
-            # Total Final com destaque visual usando st.success dentro do container
-            st.write("")  # Espaçamento
+            st.write("")
             st.success(f"### TOTAL: R$ {liquido:.2f}")
 
     # --- Área de Contrato ---
     st.markdown("---")
-
-    # Preparar dicts para o PDF
     dados_cli_pdf = {"nome": nome, "cpf": cpf, "cep": cep_cli, "rua": rua_cli, "numero": num_cli, "bairro": bairro_cli,
                      "cidade": cid_cli}
     dados_evt_pdf = {"data": str(data_evt), "cep": cep_evt, "rua": rua_evt, "numero": num_evt, "bairro": bairro_evt,
@@ -675,6 +721,15 @@ def render_historico():
     if busca: lista = [x for x in lista if busca.lower() in x['cliente'].lower()]
     if filtro_st: lista = [x for x in lista if x['status'] in filtro_st]
 
+    # Função definida FORA do loop para não ter problema de closure
+    def _alt_status(oid, ns):
+        st.session_state['db_orcamentos'] = [
+            {**o, 'status': ns} if str(o['id']) == str(oid) else o
+            for o in st.session_state['db_orcamentos']
+        ]
+        GoogleSheetsService.salvar_todos_orcamentos(st.session_state['db_orcamentos'])
+        st.session_state['feedback_msg'] = ("success", f"Status alterado para {ns}")
+
     for orc in lista:
         with st.container():
             status = orc['status']
@@ -702,17 +757,10 @@ def render_historico():
 
             bts[0].button("✏️" if status == "Aguardando" else "👁️", key=f"e_{orc['id']}", on_click=_carregar)
 
+            # CORREÇÃO: Passando argumentos via tupla args=()
             if status == "Aguardando":
-                def _alt_status(oid=orc['id'], ns="Aprovado"):
-                    st.session_state['db_orcamentos'] = [
-                        {**o, 'status': ns} if str(o['id']) == str(oid) else o
-                        for o in st.session_state['db_orcamentos']
-                    ]
-                    GoogleSheetsService.salvar_todos_orcamentos(st.session_state['db_orcamentos'])
-                    st.session_state['feedback_msg'] = ("success", f"Status alterado para {ns}")
-
-                bts[1].button("✅", key=f"a_{orc['id']}", on_click=_alt_status, args=("Aprovado",))
-                bts[2].button("❌", key=f"r_{orc['id']}", on_click=_alt_status, args=("Reprovado",))
+                bts[1].button("✅", key=f"a_{orc['id']}", on_click=_alt_status, args=(orc['id'], "Aprovado"))
+                bts[2].button("❌", key=f"r_{orc['id']}", on_click=_alt_status, args=(orc['id'], "Reprovado"))
 
             st.markdown("---")
 
