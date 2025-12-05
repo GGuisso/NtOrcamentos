@@ -1,3 +1,6 @@
 streamlit
 fpdf
 requests
+pandas
+gspread
+oauth2client
