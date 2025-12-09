@@ -8,6 +8,7 @@ import pandas as pd
 from datetime import date
 import time
 import gspread
+import urllib.parse # Necessário para o link do WhatsApp funcionar com emojis
 from oauth2client.service_account import ServiceAccountCredentials
 from typing import Tuple, Dict, List, Any, Optional
 
@@ -321,7 +322,7 @@ def reset_form_state():
     """Limpa campos do formulário (incluindo novos campos)."""
     keys = [
         # Cliente
-        "in_nome", "in_cpf", "in_cli_cep", "in_cli_rua", "in_cli_num", "in_cli_bairro", "in_cli_cidade",
+        "in_nome", "in_cpf", "in_telefone", "in_cli_cep", "in_cli_rua", "in_cli_num", "in_cli_bairro", "in_cli_cidade",
         # Evento
         "in_evt_cep", "in_evt_rua", "in_evt_num", "in_evt_bairro", "in_evt_cidade",
         # Orçamento
@@ -429,24 +430,21 @@ def render_form_orcamento(acervo, categorias, kits, detalhes):
 
     # --- 1. Dados Cadastrais ---
     st.subheader("👤 Dados do Cliente")
-    col_c1, col_c2 = st.columns([2, 1])
+    col_c1, col_c2, col_c3 = st.columns([2, 1, 1])
     nome = col_c1.text_input("Nome Completo", key="in_nome", disabled=bloqueado)
     cpf = col_c2.text_input("CPF", key="in_cpf", disabled=bloqueado)
+    celular = col_c3.text_input("WhatsApp (com DDD)", key="in_telefone", disabled=bloqueado)
 
     col_ce1, col_ce2, col_ce3, col_ce4, col_ce5 = st.columns([1, 2, 1, 1.5, 1.5])
 
     # Campo CEP com Callback
     cep_cli = col_ce1.text_input("CEP Cli.", key="in_cli_cep", on_change=_buscar_cep_cli, disabled=bloqueado)
 
-    # Value explicitamente vinculado para atualização visual
-    rua_cli = col_ce2.text_input("Rua", value=st.session_state.get("in_cli_rua", ""), key="in_cli_rua",
-                                 disabled=bloqueado)
-    num_cli = col_ce3.text_input("Nº", value=st.session_state.get("in_cli_num", ""), key="in_cli_num",
-                                 disabled=bloqueado)
-    bairro_cli = col_ce4.text_input("Bairro", value=st.session_state.get("in_cli_bairro", ""), key="in_cli_bairro",
-                                    disabled=bloqueado)
-    cid_cli = col_ce5.text_input("Cidade", value=st.session_state.get("in_cli_cidade", ""), key="in_cli_cidade",
-                                 disabled=bloqueado)
+    # CORREÇÃO: Remoção de 'value=' e uso exclusivo de 'key' para evitar conflito com session_state
+    rua_cli = col_ce2.text_input("Rua", key="in_cli_rua", disabled=bloqueado)
+    num_cli = col_ce3.text_input("Nº", key="in_cli_num", disabled=bloqueado)
+    bairro_cli = col_ce4.text_input("Bairro", key="in_cli_bairro", disabled=bloqueado)
+    cid_cli = col_ce5.text_input("Cidade", key="in_cli_cidade", disabled=bloqueado)
 
     st.subheader("📍 Local do Evento")
     col_ev0, col_ev_dup = st.columns([2, 1])
@@ -458,7 +456,7 @@ def render_form_orcamento(acervo, categorias, kits, detalhes):
 
     col_ev1, col_ev2, col_ev3, col_ev4, col_ev5 = st.columns([1, 2, 1, 1.5, 1.5])
 
-    # Campos de Evento
+    # Campos de Evento - Também sem value para consistência
     cep_evt = col_ev1.text_input("CEP Evt.", key="in_evt_cep", on_change=_buscar_cep_evt, disabled=bloqueado)
     rua_evt = col_ev2.text_input("Rua", key="in_evt_rua", disabled=bloqueado)
     num_evt = col_ev3.text_input("Nº", key="in_evt_num", disabled=bloqueado)
@@ -571,6 +569,15 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
         st.subheader("📲 Mensagem WhatsApp")
         st.code(texto_whats)
 
+        # --- BOTÃO WHATSAPP ---
+        if celular:
+            nums = "".join([c for c in celular if c.isdigit()])
+            msg_encoded = urllib.parse.quote(texto_whats)
+            link_zap = f"https://api.whatsapp.com/send?phone=55{nums}&text={msg_encoded}"
+            st.link_button("🚀 Enviar no WhatsApp", link_zap, type="secondary")
+        else:
+            st.warning("Preencha o WhatsApp do cliente para habilitar o envio.")
+
         if not bloqueado:
             def _salvar():
                 if not nome:
@@ -610,9 +617,13 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
     with c_res2:
         st.subheader("📋 Demonstrativo")
 
+        # Cria uma "caixa" única para todo o resumo financeiro (Visual de Recibo)
         with st.container(border=True):
+
+            # --- SEÇÃO 1: PRODUTOS ---
             st.caption("📦 ITENS E KITS")
 
+            # Função auxiliar para criar linhas alinhadas (Texto na esq, Valor na dir)
             def linha_resumo(texto, valor, destaque=False):
                 c1, c2 = st.columns([3, 1])
                 c1.write(texto)
@@ -622,31 +633,44 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
                     c2.write(f"R$ {valor:.2f}")
 
             linha_resumo("Base do Kit", preco_base)
-            if val_add: linha_resumo("Itens Extras", val_add)
-            if custo_baloes: linha_resumo("Balões", custo_baloes)
+
+            if val_add:
+                linha_resumo("Itens Extras", val_add)
+
+            if custo_baloes:
+                linha_resumo("Balões", custo_baloes)
 
             st.markdown("---")
+
+            # --- SEÇÃO 2: SERVIÇOS (Compacto) ---
             st.caption("🛠️ TAXAS E SERVIÇOS")
 
+            # Aqui usamos 3 colunas pequenas, mas sem fonte gigante
             cs1, cs2, cs3 = st.columns(3)
             cs1.markdown(f"<small>Higienização</small><br>**R$ {taxa_hig:.2f}**", unsafe_allow_html=True)
             cs2.markdown(f"<small>Frete</small><br>**R$ {frete:.2f}**", unsafe_allow_html=True)
             cs3.markdown(f"<small>Montagem</small><br>**R$ {mao_obra:.2f}**", unsafe_allow_html=True)
 
             st.markdown("---")
+
+            # --- SEÇÃO 3: TOTAIS ---
             c_tot1, c_tot2 = st.columns([3, 2])
+
             c_tot1.write("Subtotal:")
             c_tot2.write(f"**R$ {bruto:.2f}**")
 
             if val_desc:
                 c_tot1.write("Desconto:")
-                c_tot2.markdown(f":red[- R$ {val_desc:.2f}]")
+                c_tot2.markdown(f":red[- R$ {val_desc:.2f}]")  # Texto vermelho para desconto
 
-            st.write("")
+            # Total Final com destaque visual usando st.success dentro do container
+            st.write("")  # Espaçamento
             st.success(f"### TOTAL: R$ {liquido:.2f}")
 
     # --- Área de Contrato ---
     st.markdown("---")
+
+    # Preparar dicts para o PDF
     dados_cli_pdf = {"nome": nome, "cpf": cpf, "cep": cep_cli, "rua": rua_cli, "numero": num_cli, "bairro": bairro_cli,
                      "cidade": cid_cli}
     dados_evt_pdf = {"data": str(data_evt), "cep": cep_evt, "rua": rua_evt, "numero": num_evt, "bairro": bairro_evt,
