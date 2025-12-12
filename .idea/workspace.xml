@@ -4,16 +4,7 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="172730df-b753-4731-a10b-026a918c3925" name="Changes" comment="">
-      <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/services.py" beforeDir="false" afterPath="$PROJECT_DIR$/services.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/componentes.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/componentes.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/financeiro.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/financeiro.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/gestao.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/gestao.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/historico.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/historico.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/orcamento.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/orcamento.py" afterDir="false" />
-    </list>
+    <list default="true" id="172730df-b753-4731-a10b-026a918c3925" name="Changes" comment="" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
     <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
