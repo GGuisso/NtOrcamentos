@@ -1,11 +1,11 @@
-# ARQUIVO: views/orcamento.py
 import streamlit as st
 import datetime
 import time
 import os
 import urllib.parse
 from datetime import date
-from services import GoogleSheetsService, InventoryService, CepService, PDFGenerator, EmailService
+from collections import Counter
+from services import SupabaseService, InventoryService, CepService, PDFGenerator, EmailService
 from views.componentes import reset_form_state
 
 
@@ -14,14 +14,18 @@ def render_area_contrato(dados_cli, dados_evt, itens, total, sinal, restante):
     with st.expander("Gerenciar Contrato (Baixar ou Enviar)"):
         st.info("Janela de horários:")
         c1, c2, c3 = st.columns([2, 1, 1])
-        d_ret = c1.date_input("Retirada", value=datetime.datetime.strptime(dados_evt['data'], '%Y-%m-%d').date())
+
+        try:
+            data_base = datetime.datetime.strptime(dados_evt['data'], '%Y-%m-%d').date()
+        except:
+            data_base = date.today()
+
+        d_ret = c1.date_input("Retirada", value=data_base)
         h_ret_i = c2.time_input("Das", value=datetime.time(10, 0))
         h_ret_f = c3.time_input("Até", value=datetime.time(11, 0))
 
         c4, c5, c6 = st.columns([2, 1, 1])
-        d_dev = c4.date_input("Devolução", value=datetime.datetime.strptime(dados_evt['data'],
-                                                                            '%Y-%m-%d').date() + datetime.timedelta(
-            days=1))
+        d_dev = c4.date_input("Devolução", value=data_base + datetime.timedelta(days=1))
         h_dev_i = c5.time_input("Das ", value=datetime.time(8, 0))
         h_dev_f = c6.time_input("Até ", value=datetime.time(10, 0))
 
@@ -40,15 +44,18 @@ def render_area_contrato(dados_cli, dados_evt, itens, total, sinal, restante):
                         st.download_button("💾 Baixar PDF", f, file_name=f_path)
                     os.remove(f_path)
         with b_send:
-            email = st.text_input("E-mail do Cliente:")
+            # Puxa e-mail diretamente do estado (preenchido no topo)
+            email_cadastro = st.session_state.get('in_email', '')
+            st.text_input("E-mail do Cliente (Do Cadastro):", value=email_cadastro, disabled=True)
+
             if st.button("📧 Enviar via Autentique"):
-                if not email or not dados_cli['nome']:
-                    st.error("Preencha e-mail e nome.")
+                if not email_cadastro or not dados_cli['nome']:
+                    st.error("Preencha o e-mail no formulário do cliente (topo da página).")
                 else:
                     with st.spinner("Enviando..."):
                         f_path = PDFGenerator.gerar(dados_cli, dados_evt, itens, total, sinal, restante, txt_ret,
                                                     txt_dev)
-                        ok, res = EmailService.enviar_contrato(f_path, email)
+                        ok, res = EmailService.enviar_contrato(f_path, email_cadastro)
                         if ok:
                             st.success("Enviado!" if res == "EMAIL_ENVIADO" else "Enviado! Link gerado.")
                             if "http" in res: st.code(res)
@@ -61,14 +68,20 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
     bloqueado = False
     status_atual = "Novo"
 
+    # --- LÓGICA DE EDIÇÃO E BLOQUEIO ---
     if st.session_state['edit_id']:
         orc_atual = next(
-            (x for x in st.session_state['db_orcamentos'] if str(x['id']) == str(st.session_state['edit_id'])), None)
+            (x for x in st.session_state.get('db_orcamentos', []) if str(x['id']) == str(st.session_state['edit_id'])),
+            None)
+
         if orc_atual:
             status_atual = orc_atual['status']
-            if status_atual not in ["Aguardando", "Novo"]:
+            STATUS_EDITAVEIS = ["Novo", "Aguardando Aprovação", "Rascunho"]
+
+            if status_atual not in STATUS_EDITAVEIS:
                 bloqueado = True
-                st.warning(f"🔒 Este orçamento está **{status_atual.upper()}** e não pode ser editado.")
+                st.warning(
+                    f"🔒 Este orçamento está **{status_atual.upper()}** e não pode ser editado. (Apenas 'Aguardando Aprovação' ou 'Rascunho' permitem alterações)")
             else:
                 st.info(f"✏️ Editando orçamento #{st.session_state['edit_id']} (Status: {status_atual})")
 
@@ -85,6 +98,7 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
         c2.button("📑 Usar como base (Duplicar)", on_click=_duplicar, use_container_width=True)
         st.markdown("---")
 
+    # --- FUNÇÕES AUXILIARES ---
     def _buscar_cep_cli():
         res = CepService.consultar(st.session_state.get("in_cli_cep", ""))
         if res:
@@ -113,11 +127,63 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
             st.session_state["in_evt_bairro"] = st.session_state.get("in_cli_bairro", "")
             st.session_state["in_evt_cidade"] = st.session_state.get("in_cli_cidade", "")
 
+    # --- CALLBACK DE AUTOPREENCHIMENTO ---
+    def _autocompletar_cliente():
+        cpf_input = st.session_state.get('in_cpf', '').strip()
+        nome_input = st.session_state.get('in_nome', '').strip()
+
+        clientes_encontrados = []
+
+        # Prioridade: CPF (Busca Exata)
+        if cpf_input:
+            clientes_encontrados = SupabaseService.buscar_clientes(cpf_input, por_cpf=True)
+        # Se não tiver CPF, busca por Nome
+        elif nome_input:
+            clientes_encontrados = SupabaseService.buscar_clientes(nome_input, por_cpf=False)
+
+        if len(clientes_encontrados) == 1:
+            c = clientes_encontrados[0]
+            st.session_state['in_nome'] = c.get('nome', '')
+            st.session_state['in_cpf'] = c.get('cpf', '')
+            st.session_state['in_telefone'] = c.get('telefone', '')
+            st.session_state['in_email'] = c.get('email', '')
+
+            # Tratamento da data de nascimento
+            nasc_db = c.get('data_nascimento')
+            if nasc_db:
+                try:
+                    st.session_state['in_nascimento'] = datetime.datetime.strptime(nasc_db, '%Y-%m-%d').date()
+                except:
+                    st.session_state['in_nascimento'] = None
+
+            # Endereço
+            st.session_state['in_cli_cep'] = c.get('cep', '')
+            st.session_state['in_cli_rua'] = c.get('logradouro', '')
+            st.session_state['in_cli_num'] = c.get('numero', '')
+            st.session_state['in_cli_bairro'] = c.get('bairro', '')
+            st.session_state['in_cli_cidade'] = c.get('cidade', '')
+
+            st.toast(f"Cliente {c['nome']} carregado!", icon="✅")
+
+        elif len(clientes_encontrados) > 1:
+            st.toast(f"Encontrei {len(clientes_encontrados)} clientes parecidos. Digite o CPF.", icon="⚠️")
+
+    # --- FORMULÁRIO ---
     st.subheader("👤 Dados do Cliente")
     col_c1, col_c2, col_c3 = st.columns([2, 1, 1])
-    nome = col_c1.text_input("Nome Completo", key="in_nome", disabled=bloqueado)
-    cpf = col_c2.text_input("CPF", key="in_cpf", disabled=bloqueado)
-    celular = col_c3.text_input("WhatsApp (com DDD)", key="in_telefone", disabled=bloqueado)
+    # Adicionado on_change para Autopreenchimento
+    nome = col_c1.text_input("Nome Completo", key="in_nome", disabled=bloqueado, on_change=_autocompletar_cliente)
+    cpf = col_c2.text_input("CPF", key="in_cpf", disabled=bloqueado, on_change=_autocompletar_cliente)
+    celular = col_c3.text_input("WhatsApp", key="in_telefone", disabled=bloqueado)
+
+    # NOVOS CAMPOS: EMAIL E NASCIMENTO
+    col_c4, col_c5 = st.columns([2, 1])
+    col_c4.text_input("E-mail", key="in_email", placeholder="exemplo@email.com", disabled=bloqueado)
+
+    # Correção da data 1900
+    col_c5.date_input("Data Nascimento", value=None, min_value=date(1900, 1, 1), max_value=date.today(),
+                      key="in_nascimento", format="DD/MM/YYYY", disabled=bloqueado,
+                      help="Para envio de promoções futuras")
 
     col_ce1, col_ce2, col_ce3, col_ce4, col_ce5 = st.columns([1, 2, 1, 1.5, 1.5])
     cep_cli = col_ce1.text_input("CEP Cli.", key="in_cli_cep", on_change=_buscar_cep_cli, disabled=bloqueado)
@@ -165,31 +231,55 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
     itens_add = st.multiselect("Selecione itens avulsos:", list(acervo.keys()), key="in_itens_add", disabled=bloqueado)
     val_add = sum(acervo.get(i, 0) for i in itens_add)
 
+    # --- VERIFICAÇÃO DE ESTOQUE INTELIGENTE ---
     if not bloqueado:
-        itens_verificar = itens_pers + itens_add
+        itens_para_validar = []
+
+        # 1. Adiciona itens personalizados (se houver)
+        itens_para_validar.extend(itens_pers)
+
+        # 2. Adiciona itens extras (se houver)
+        itens_para_validar.extend(itens_add)
+
+        # 3. Adiciona itens DO KIT (se for um kit pronto)
+        if nivel != "Montar Personalizado (Do Zero)" and nivel in kits:
+            desc_kit = kits[nivel]["descricao"]
+            for d in desc_kit:
+                # Parse: "2x Vaso" ou "Mesa"
+                partes_item = d.split('x ', 1)
+                if len(partes_item) > 1:
+                    try:
+                        qtd_k = int(partes_item[0])
+                        nome_k = partes_item[1].strip()
+                    except:
+                        qtd_k = 1
+                        nome_k = d.strip()
+                else:
+                    qtd_k = 1
+                    nome_k = d.strip()
+
+                # Adiciona N vezes na lista para contar corretamente
+                itens_para_validar.extend([nome_k] * qtd_k)
+
         avisos_estoque = []
+        mapa_ocupacao = InventoryService.calcular_mapa_ocupacao(st.session_state.get('db_orcamentos', []))
 
-        # --- OTIMIZAÇÃO: Geração única do mapa de ocupação ---
-        mapa_ocupacao = InventoryService.calcular_mapa_ocupacao(st.session_state['db_orcamentos'])
+        # Usa Counter para somar tudo (ex: Kit tem 1 Vaso + Extra tem 1 Vaso = Precisa de 2)
+        contagem_necessaria = Counter(itens_para_validar)
 
-        for it in itens_verificar:
+        for it, qtd_nec in contagem_necessaria.items():
             qtd_total = estoque_dict.get(it, 0)
+            usados_dia = mapa_ocupacao.get(str(data_evt), {}).get(it, 0)
 
-            # Uso da verificação rápida via mapa
-            usados_dia, saldo = InventoryService.verificar_disponibilidade_rapida(
-                it, str(data_evt), qtd_total, mapa_ocupacao
-            )
+            disponivel = qtd_total - usados_dia
+            if disponivel < 0: disponivel = 0  # Segurança
 
-            # Ajuste se estiver editando o próprio orçamento
-            if st.session_state['edit_id']:
-                saldo += 1
-                usados_dia = max(0, usados_dia - 1)
-
-            if saldo <= 0:
+            if disponivel < qtd_nec:
                 avisos_estoque.append(
-                    f"⚠️ **{it}:** Você tem {qtd_total}, mas {usados_dia} já estão alugados neste dia.")
+                    f"⚠️ **{it}:** Precisa de {qtd_nec}, mas só tem {disponivel} livres nesta data (Total: {qtd_total} | Alugados: {usados_dia}).")
+
         if avisos_estoque:
-            st.warning("🚨 **ALERTA DE ESTOQUE (Overbooking):**\n" + "\n".join(avisos_estoque))
+            st.error("🚨 **ALERTA DE ESTOQUE (Overbooking):**\n" + "\n".join(avisos_estoque))
 
     obs_alt = ""
     if nivel != "Montar Personalizado (Do Zero)" and st.checkbox("🔄 Houve troca de itens?", key="in_check_obs",
@@ -276,30 +366,31 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
                     st.session_state['feedback_msg'] = ("error", "Preencha o nome do cliente.")
                     return
                 novo_id = int(time.time())
+
+                v_itens = preco_base + val_add + custo_baloes
+                v_servicos = frete + mao_obra + taxa_hig
+
                 orcamento = {
                     "id": st.session_state['edit_id'] or novo_id,
                     "data_registro": str(datetime.date.today()),
-                    "status": "Aguardando Aprovação" if not st.session_state['edit_id'] else status_atual,
+                    "status": status_atual if st.session_state['edit_id'] else "Aguardando Aprovação",
                     "cliente": nome,
                     "data_evento": str(data_evt),
                     "cidade": cid_evt,
                     "tema": tema_sel,
                     "total": liquido,
+                    "valor_itens": v_itens,
+                    "valor_servicos": v_servicos,
+                    "valor_desconto": val_desc,
                     "dados_form": {k: st.session_state[k] for k in st.session_state if
                                    k.startswith('in_') or k == 'in_data'}
                 }
                 with st.spinner("Salvando na nuvem..."):
-                    GoogleSheetsService.upsert_orcamento(orcamento)
+                    SupabaseService.upsert_orcamento(orcamento)
 
-                db = st.session_state['db_orcamentos']
-                if st.session_state['edit_id']:
-                    db = [orcamento if str(o['id']) == str(orcamento['id']) else o for o in db]
-                    msg = "Orçamento atualizado!"
-                else:
-                    db.append(orcamento)
-                    msg = "Novo orçamento criado!"
+                st.session_state['db_orcamentos'] = SupabaseService.carregar_orcamentos()
 
-                st.session_state['db_orcamentos'] = db
+                msg = "Orçamento atualizado!" if st.session_state['edit_id'] else "Novo orçamento criado!"
                 st.session_state['feedback_msg'] = ("success", msg)
                 st.session_state['edit_id'] = None
                 reset_form_state()

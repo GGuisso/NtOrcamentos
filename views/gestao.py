@@ -1,14 +1,15 @@
+# ARQUIVO: views/gestao.py
 import streamlit as st
 import pandas as pd
 import time
-from services import GoogleSheetsService
+from services import SupabaseService
 
 
 def render_gestao():
     st.header("📦 Gestão de Acervo e Catálogo Inteligente")
 
     # Carrega dados atuais
-    acervo, categorias, kits, detalhes, estoque_dict = GoogleSheetsService.carregar_catalogo()
+    acervo, categorias, kits, detalhes, estoque_dict = SupabaseService.carregar_catalogo()
 
     tab_itens, tab_kits_builder, tab_temas_builder = st.tabs(
         ["🧩 Acervo (Itens)", "🎁 Construtor de Kits", "🎨 Construtor de Temas"])
@@ -19,31 +20,37 @@ def render_gestao():
     with tab_itens:
         st.subheader("Gerenciar Estoque e Preços")
 
-        # 1. Carrega DataFrame
         if "df_itens_cache" not in st.session_state:
-            st.session_state["df_itens_cache"] = GoogleSheetsService.get_dataframe("Itens")
+            st.session_state["df_itens_cache"] = SupabaseService.get_dataframe("Itens")
 
         df_itens = st.session_state["df_itens_cache"]
 
         if df_itens.empty:
-            df_itens = pd.DataFrame(columns=["Item", "Imagem", "Preco", "Tipo", "Qtd_Estoque",
-                                             "Custo_Unitario", "Loja_Ultima_Compra", "Link_Referencia"])
+            df_itens = pd.DataFrame(columns=["id", "Item", "Imagem", "Preco", "Tipo", "Qtd_Estoque",
+                                             "Custo_Unitario", "Link_Referencia"])
 
-        if "Imagem" not in df_itens.columns:
-            df_itens["Imagem"] = ""
+        if "Imagem" not in df_itens.columns: df_itens["Imagem"] = ""
+        if "Tipo" not in df_itens.columns: df_itens["Tipo"] = "Acervo"
+        if "id" not in df_itens.columns: df_itens["id"] = None
 
-        # 2. Uploader Inteligente
+        # --- LIMPEZA VISUAL (ACERVO) ---
+        cols_audit = ["created_at", "updated_at"]
+        df_itens = df_itens.drop(columns=[c for c in cols_audit if c in df_itens.columns], errors='ignore')
+
+        colunas_prioridade = ["id", "Imagem", "Item", "Tipo", "Preco", "Qtd_Estoque"]
+        colunas_restantes = [c for c in df_itens.columns if c not in colunas_prioridade]
+        df_itens = df_itens[colunas_prioridade + colunas_restantes]
+        # -------------------------------
+
         with st.expander("📸 Enviar Nova Foto e Vincular Automaticamente"):
             if not df_itens.empty:
                 c_up1, c_up2 = st.columns([2, 1])
 
-                # Lista ordenada
                 lista_opcoes = df_itens["Item"].unique().tolist()
                 lista_opcoes.sort()
 
                 item_selecionado = c_up1.selectbox("Selecione o item do acervo:", options=lista_opcoes)
 
-                # Sugestão de nome limpo
                 nome_arquivo_sugerido = item_selecionado.strip() if item_selecionado else ""
                 nome_item_img = c_up2.text_input("Nome base do arquivo:", value=nome_arquivo_sugerido)
 
@@ -52,74 +59,64 @@ def render_gestao():
                 if uploaded_file and item_selecionado:
                     if st.button("☁️ Subir Foto e Atualizar Item"):
                         with st.spinner("Enviando para o Supabase..."):
-                            # --- AJUSTE: Detecta extensão real e não gera timestamp aqui (o service já faz isso) ---
                             extensao = uploaded_file.name.split('.')[-1].lower()
                             nome_limpo_input = nome_item_img.replace(" ", "_")
-                            # Envia apenas "Nome.jpg", o service transformará em "Tenant/Timestamp_Nome.jpg"
                             nome_final = f"{nome_limpo_input}.{extensao}"
 
-                            link_gerado = GoogleSheetsService.upload_imagem(uploaded_file, nome_final)
+                            link_gerado = SupabaseService.upload_imagem(uploaded_file, nome_final)
 
                             if link_gerado:
-                                # Atualiza DataFrame Local
                                 idx = df_itens.index[df_itens['Item'] == item_selecionado].tolist()
                                 if idx:
-                                    df_itens.at[idx[0], 'Imagem'] = link_gerado
+                                    # Envia APENAS o item modificado para o backend
+                                    df_temp = df_itens.iloc[[idx[0]]].copy()
+                                    df_temp.at[idx[0], 'Imagem'] = link_gerado
+                                    SupabaseService.salvar_dataframe("Itens", df_temp)
 
-                                    # Salva no Sheets
-                                    GoogleSheetsService.salvar_dataframe("Itens", df_itens)
-
-                                    # Limpa Cache
                                     del st.session_state["df_itens_cache"]
                                     st.cache_data.clear()
-
                                     st.success(f"✅ Foto vinculada ao item '{item_selecionado}'!")
                                     st.caption(f"Link gerado: {link_gerado}")
                                     time.sleep(2)
                                     st.rerun()
                             else:
-                                st.error("Erro no upload. Verifique logs.")
+                                st.error("Erro no upload.")
             else:
                 st.info("Cadastre itens na tabela abaixo primeiro.")
 
         st.markdown("---")
 
-        # 3. Tabela de Edição
-        if not df_itens.empty:
-            col_config = {
-                "Item": st.column_config.TextColumn("Nome do Item", required=True),
-                "Imagem": st.column_config.ImageColumn("Foto", help="Preview"),
-                "Preco": st.column_config.NumberColumn("Preço Aluguel", format="%.2f", min_value=0.0),
-                "Qtd_Estoque": st.column_config.NumberColumn("Estoque", step=1, min_value=0),
-                "Custo_Unitario": st.column_config.NumberColumn("Custo Compra", format="%.2f"),
-                "Link_Referencia": st.column_config.LinkColumn("Link Reposição"),
-                "Tipo": st.column_config.SelectboxColumn("Tipo", options=["Acervo", "Consumível", "Móvel"])
-            }
+        col_config = {
+            "id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+            "Item": st.column_config.TextColumn("Nome do Item", required=True),
+            "Imagem": st.column_config.ImageColumn("Foto", help="Preview"),
+            "Preco": st.column_config.NumberColumn("Preço Aluguel", format="%.2f", min_value=0.0),
+            "Qtd_Estoque": st.column_config.NumberColumn("Estoque", step=1, min_value=0),
+            "Custo_Unitario": st.column_config.NumberColumn("Custo Compra", format="%.2f"),
+            "Link_Referencia": st.column_config.LinkColumn("Link Reposição"),
+            "Tipo": st.column_config.SelectboxColumn("Tipo", options=["Acervo", "Consumível", "Móvel"], required=True,
+                                                     default="Acervo"),
+            "ativo": st.column_config.CheckboxColumn("Ativo?", default=True)
+        }
 
-            st.info("💡 Edite os valores diretamente na tabela abaixo.")
+        st.info("💡 Edite os valores diretamente na tabela abaixo.")
 
-            df_editado = st.data_editor(
-                df_itens,
-                column_config=col_config,
-                width="stretch",
-                num_rows="dynamic",
-                key="editor_itens_estoque"
-            )
+        df_editado = st.data_editor(
+            df_itens,
+            column_config=col_config,
+            width="stretch",
+            num_rows="dynamic",
+            key="editor_itens_estoque",
+            hide_index=True
+        )
 
-            if st.button("💾 Salvar Alterações no Acervo", type="primary"):
-                with st.spinner("Salvando..."):
-                    GoogleSheetsService.salvar_dataframe("Itens", df_editado)
-                    del st.session_state["df_itens_cache"]
-                    st.cache_data.clear()
-                    st.toast("Estoque atualizado!", icon="✅")
-                    time.sleep(1)
-                    st.rerun()
-        else:
-            st.warning("Tabela vazia.")
-            df_editado = st.data_editor(df_itens, num_rows="dynamic", key="editor_itens_vazio")
-            if st.button("💾 Salvar Primeiro Item", type="primary"):
-                GoogleSheetsService.salvar_dataframe("Itens", df_editado)
+        if st.button("💾 Salvar Alterações no Acervo", type="primary"):
+            with st.spinner("Salvando..."):
+                SupabaseService.salvar_dataframe("Itens", df_editado)
+                del st.session_state["df_itens_cache"]
                 st.cache_data.clear()
+                st.toast("Estoque atualizado!", icon="✅")
+                time.sleep(1)
                 st.rerun()
 
     # ---------------------------------------------------------
@@ -132,13 +129,15 @@ def render_gestao():
             st.stop()
 
         if "df_kits_cache" not in st.session_state:
-            st.session_state["df_kits_cache"] = GoogleSheetsService.get_dataframe("Kits")
+            st.session_state["df_kits_cache"] = SupabaseService.get_dataframe("Kits")
 
         df_kits_raw = st.session_state["df_kits_cache"]
 
         with st.expander("📋 Visualizar Kits Existentes"):
             if not df_kits_raw.empty:
-                st.dataframe(df_kits_raw, width="stretch")
+                # --- LIMPEZA VISUAL (KITS) ---
+                df_kits_show = df_kits_raw.drop(columns=["created_at", "updated_at"], errors='ignore')
+                st.dataframe(df_kits_show, width="stretch", hide_index=True)
             else:
                 st.info("Nenhum kit cadastrado.")
         st.markdown("---")
@@ -150,12 +149,17 @@ def render_gestao():
         kit_nome = ""
         kit_preco = 0.0
         itens_pre_selecionados = {}
+        kit_id_atual = None
 
         if modo_kit == "Editar Existente" and lista_kits_existentes:
             kit_selecionado = st.selectbox("Selecione o Kit", lista_kits_existentes)
             dados_kit = df_kits_raw[df_kits_raw['Nome'] == kit_selecionado].iloc[0]
+
             kit_nome = dados_kit['Nome']
             kit_preco = float(dados_kit['Preco'])
+            # Pega o ID para atualização
+            if 'id' in dados_kit: kit_id_atual = int(dados_kit['id'])
+
             desc = str(dados_kit['Descricao'])
             try:
                 partes = desc.split(';')
@@ -205,17 +209,29 @@ def render_gestao():
                 if not kit_nome:
                     st.error("Defina um nome.")
                 else:
-                    desc_list = [f"{row['Qtd_No_Kit']}x {row['Item']}" for _, row in itens_selecionados.iterrows()]
-                    novo = {"Nome": kit_nome, "Preco": kit_preco, "Descricao": "; ".join(desc_list)}
+                    with st.spinner("Salvando kit..."):
+                        desc_list = [f"{row['Qtd_No_Kit']}x {row['Item']}" for _, row in itens_selecionados.iterrows()]
 
-                    df_final = df_kits_raw.copy()
-                    if modo_kit == "Editar Existente": df_final = df_final[df_final['Nome'] != kit_nome]
-                    df_final = pd.concat([df_final, pd.DataFrame([novo])], ignore_index=True)
+                        # --- CORREÇÃO: Cria DF de UMA linha apenas ---
+                        novo_dict = {
+                            "Nome": kit_nome,
+                            "Preco": kit_preco,
+                            "Descricao": "; ".join(desc_list)
+                        }
+                        # Se temos ID, passamos para update
+                        if kit_id_atual: novo_dict['id'] = kit_id_atual
 
-                    GoogleSheetsService.salvar_dataframe("Kits", df_final)
-                    del st.session_state["df_kits_cache"]
-                    st.cache_data.clear()
-                    st.rerun()
+                        df_unico = pd.DataFrame([novo_dict])
+
+                        # Salva somente este kit
+                        SupabaseService.salvar_dataframe("Kits", df_unico)
+
+                        del st.session_state["df_kits_cache"]
+                        st.cache_data.clear()
+
+                        st.success(f"Kit '{kit_nome}' salvo com sucesso!")
+                        time.sleep(1.5)
+                        st.rerun()
 
     # ---------------------------------------------------------
     # ABA 3: TEMAS
@@ -225,11 +241,13 @@ def render_gestao():
         if not acervo: st.warning("Acervo vazio."); st.stop()
 
         if "df_temas_cache" not in st.session_state:
-            st.session_state["df_temas_cache"] = GoogleSheetsService.get_dataframe("Temas")
+            st.session_state["df_temas_cache"] = SupabaseService.get_dataframe("Temas")
         df_temas = st.session_state["df_temas_cache"]
 
         with st.expander("Lista de Temas"):
-            if not df_temas.empty: st.dataframe(df_temas, width="stretch")
+            if not df_temas.empty:
+                df_temas_show = df_temas.drop(columns=["created_at", "updated_at"], errors='ignore')
+                st.dataframe(df_temas_show, width="stretch", hide_index=True)
 
         c1, c2 = st.columns(2)
         cat = c1.text_input("Categoria", placeholder="Ex: Infantil")
@@ -241,10 +259,16 @@ def render_gestao():
             if not nome or not cat:
                 st.error("Preencha Categoria e Nome.")
             else:
-                desc = f"{detalhes} | Base: {', '.join(itens)}" if itens else detalhes
-                novo = pd.DataFrame([{"Categoria": cat, "Tema": nome, "Detalhes": desc}])
-                df_final = pd.concat([df_temas, novo], ignore_index=True)
-                GoogleSheetsService.salvar_dataframe("Temas", df_final)
-                del st.session_state["df_temas_cache"]
-                st.cache_data.clear()
-                st.rerun()
+                with st.spinner("Salvando tema..."):
+                    desc = f"{detalhes} | Base: {', '.join(itens)}" if itens else detalhes
+
+                    # --- CORREÇÃO: Salva apenas o novo tema ---
+                    df_unico = pd.DataFrame([{"Categoria": cat, "Tema": nome, "Detalhes": desc}])
+                    SupabaseService.salvar_dataframe("Temas", df_unico)
+
+                    del st.session_state["df_temas_cache"]
+                    st.cache_data.clear()
+
+                    st.success(f"Tema '{nome}' salvo com sucesso!")
+                    time.sleep(1.5)
+                    st.rerun()

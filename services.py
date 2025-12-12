@@ -1,49 +1,34 @@
-# ARQUIVO: services.py
 import streamlit as st
 import requests
 import json
-import gspread
 import pandas as pd
-import datetime
 import time
-from fpdf import FPDF
-from oauth2client.service_account import ServiceAccountCredentials
-from supabase import create_client, Client
+from datetime import datetime, date, time as dt_time
+from supabase import create_client, Client, ClientOptions
 from typing import Tuple, Dict, List, Any, Optional
+from fpdf import FPDF
 
 # ==========================================
-# CONSTANTES
+# CONFIGURAÇÃO E SEGREDOS
 # ==========================================
-SHEET_URL = st.secrets.get("SHEET_URL", "")
-AUTENTIQUE_URL = "https://api.autentique.com.br/v2/graphql"
 VIACEP_URL = "https://viacep.com.br/ws/{}/json/"
-
-
-# --- FUNÇÃO AUXILIAR PARA LER SECRETS COM SEGURANÇA ---
-def get_secret(key_name):
-    """
-    Tenta buscar a chave na raiz dos secrets.
-    Se não encontrar, tenta buscar dentro de GCP_SERVICE_ACCOUNT
-    (caso tenha ficado indentado errado no TOML).
-    """
-    # 1. Tenta na raiz
-    if key_name in st.secrets:
-        return st.secrets[key_name]
-
-    # 2. Tenta dentro do bloco GCP (erro comum de formatação TOML)
-    if "GCP_SERVICE_ACCOUNT" in st.secrets:
-        if key_name in st.secrets["GCP_SERVICE_ACCOUNT"]:
-            return st.secrets["GCP_SERVICE_ACCOUNT"][key_name]
-
-    return ""
-
-
-# Credenciais Supabase (Carregamento Robusto)
-SUPA_URL = get_secret("SUPABASE_URL")
-SUPA_KEY = get_secret("SUPABASE_KEY")
+AUTENTIQUE_URL = "https://api.autentique.com.br/v2/graphql"
 
 # ID DA EMPRESA (TENANT)
 TENANT_ID = "nt_festas_01"
+
+
+def get_secret(key_name):
+    """Busca segura de chaves no secrets.toml."""
+    if key_name in st.secrets:
+        return st.secrets[key_name]
+    if "GCP_SERVICE_ACCOUNT" in st.secrets and key_name in st.secrets["GCP_SERVICE_ACCOUNT"]:
+        return st.secrets["GCP_SERVICE_ACCOUNT"][key_name]
+    return ""
+
+
+SUPA_URL = get_secret("SUPABASE_URL")
+SUPA_KEY = get_secret("SUPABASE_KEY")
 
 
 # ==========================================
@@ -51,14 +36,11 @@ TENANT_ID = "nt_festas_01"
 # ==========================================
 
 class CepService:
-    """Gerencia consulta de endereço via CEP (ViaCEP)."""
-
     @staticmethod
     def consultar(cep: str) -> Optional[Dict[str, str]]:
         if not cep: return None
         cep_limpo = "".join([c for c in cep if c.isdigit()])
         if len(cep_limpo) != 8: return None
-
         try:
             response = requests.get(VIACEP_URL.format(cep_limpo), timeout=3)
             if response.status_code == 200:
@@ -71,295 +53,526 @@ class CepService:
             return None
 
 
-class GoogleSheetsService:
-    """Gerencia toda a comunicação com o Google Sheets e Supabase Storage."""
-
+class SupabaseService:
     @staticmethod
     @st.cache_resource
-    def get_connection():
-        """Conecta ao Google Sheets usando as credenciais do Secrets."""
-        try:
-            scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-
-            if "GCP_SERVICE_ACCOUNT" not in st.secrets:
-                raise Exception("Segredo GCP_SERVICE_ACCOUNT não encontrado no secrets.toml")
-
-            creds_dict = dict(st.secrets["GCP_SERVICE_ACCOUNT"])
-
-            if "private_key" in creds_dict:
-                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
-
-            creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
-            client = gspread.authorize(creds)
-            client.open_by_url(SHEET_URL)
-            return client
-        except Exception as e:
-            st.error(f"Erro de conexão com a planilha: {e}")
+    def get_client() -> Client:
+        if not SUPA_URL or not SUPA_KEY:
+            st.error("⚠️ Configure SUPABASE_URL e SUPABASE_KEY no secrets.toml")
             st.stop()
 
-    # --- MÉTODO DE UPLOAD SUPABASE CORRIGIDO ---
+        options = ClientOptions(
+            postgrest_client_timeout=30,
+            storage_client_timeout=30,
+            schema="public",
+        )
+        return create_client(SUPA_URL, SUPA_KEY, options=options)
+
+    # ------------------------------------------------------------------
+    # 0. BUSCA DE CLIENTES (NOVO)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def buscar_clientes(termo: str, por_cpf: bool = False) -> List[Dict]:
+        """
+        Busca clientes por CPF exato ou Nome parcial (ilike).
+        """
+        supabase = SupabaseService.get_client()
+        termo = termo.strip()
+        if not termo: return []
+
+        try:
+            query = supabase.table("clientes").select("*")
+
+            if por_cpf:
+                # Remove pontuação se houver, busca exata
+                cpf_limpo = "".join([c for c in termo if c.isdigit()])
+                if not cpf_limpo: return []
+                res = query.eq("cpf", cpf_limpo).execute()
+            else:
+                # Busca parcial por nome (case insensitive)
+                res = query.ilike("nome", f"%{termo}%").execute()
+
+            return res.data
+        except Exception as e:
+            print(f"Erro busca cliente: {e}")
+            return []
+
+    # ------------------------------------------------------------------
+    # 1. GESTÃO DE ARQUIVOS
+    # ------------------------------------------------------------------
     @staticmethod
     def upload_imagem(file_obj, nome_arquivo_original: str) -> Optional[str]:
-        """
-        Envia foto para o Supabase Storage na pasta do cliente.
-        """
         try:
-            if not SUPA_URL or not SUPA_KEY:
-                st.error("ERRO: SUPABASE_URL ou SUPABASE_KEY não encontrados. Verifique o secrets.toml.")
-                return None
-
-            # 1. Conectar ao Supabase
-            supabase: Client = create_client(SUPA_URL, SUPA_KEY)
-
-            # 2. Sanitizar nome
+            supabase = SupabaseService.get_client()
             nome_limpo = "".join(
                 [c for c in nome_arquivo_original if c.isalnum() or c in (' ', '_', '.', '-')]).replace(" ", "_")
+            path = f"{TENANT_ID}/{int(time.time())}_{nome_limpo}"
 
-            # 3. Caminho do Arquivo
-            file_path = f"{TENANT_ID}/{int(time.time())}_{nome_limpo}"
-
-            # 4. Upload
-            bucket_name = "acervo"
             file_bytes = file_obj.getvalue()
-
-            # Envia o arquivo
-            response = supabase.storage.from_(bucket_name).upload(
-                path=file_path,
-                file=file_bytes,
-                file_options={"content-type": file_obj.type, "upsert": "false"}
+            supabase.storage.from_("acervo").upload(
+                path=path, file=file_bytes, file_options={"content-type": file_obj.type, "upsert": "false"}
             )
-
-            # 5. Gerar URL Pública
-            # Nota: O bucket "acervo" precisa estar configurado como "Public" no dashboard do Supabase
-            public_url = supabase.storage.from_(bucket_name).get_public_url(file_path)
-
-            return public_url
-
+            return supabase.storage.from_("acervo").get_public_url(path)
         except Exception as e:
-            # Imprime o erro no console para debug
-            print(f"❌ Erro Supabase Detalhado: {str(e)}")
-
-            msg_erro = str(e)
-            if "Duplicate" in msg_erro:
-                st.warning("Já existe um arquivo com este nome.")
-            elif "kc-not-found" in msg_erro or "Bucket not found" in msg_erro:
-                st.error("Erro: Bucket 'acervo' não encontrado no Supabase.")
-            else:
-                st.error(f"Erro ao enviar imagem: {msg_erro}")
+            print(f"Erro Upload: {e}")
             return None
 
+    # ------------------------------------------------------------------
+    # 2. LEITURA DE DADOS
+    # ------------------------------------------------------------------
     @staticmethod
-    @st.cache_data(ttl=600)
     def carregar_catalogo() -> Tuple[Dict, Dict, Dict, Dict, Dict]:
-        try:
-            client = GoogleSheetsService.get_connection()
-            sheet = client.open_by_url(SHEET_URL)
+        supabase = SupabaseService.get_client()
 
-            # 1. Itens
-            try:
-                df_itens = pd.DataFrame(sheet.worksheet("Itens").get_all_records())
-                if not df_itens.empty:
-                    df_itens['Preco'] = pd.to_numeric(df_itens['Preco'], errors='coerce').fillna(0.0)
-                    df_itens['Qtd_Estoque'] = pd.to_numeric(df_itens['Qtd_Estoque'], errors='coerce').fillna(0).astype(
-                        int)
+        # A. Acervo
+        res_acervo = supabase.table("acervo").select("*").eq("ativo", True).execute()
+        acervo_dict = {}
+        estoque_dict = {}
+        for item in res_acervo.data:
+            acervo_dict[item['nome']] = float(item['preco_aluguel'])
+            estoque_dict[item['nome']] = int(item['quantidade_total'])
 
-                    if 'Imagem' not in df_itens.columns:
-                        df_itens['Imagem'] = ""
+        # B. Temas
+        res_temas = supabase.table("temas").select("*").execute()
+        categorias = {}
+        detalhes = {}
+        for t in res_temas.data:
+            cat = t['categoria']
+            tema_nome = t['nome']
+            if cat not in categorias: categorias[cat] = []
+            categorias[cat].append(tema_nome)
+            detalhes[tema_nome] = t['detalhes'] or ""
 
-                    acervo = dict(zip(df_itens['Item'], df_itens['Preco']))
-                    estoque = dict(zip(df_itens['Item'], df_itens['Qtd_Estoque']))
-                else:
-                    acervo = {}
-                    estoque = {}
-            except:
-                acervo = {}
-                estoque = {}
+        # C. Kits
+        res_kits = supabase.table("kits").select("*").execute()
+        kits_dict = {}
+        for k in res_kits.data:
+            items_desc = [x.strip() for x in str(k.get('descricao_comercial', '')).split(';') if x.strip()]
+            kits_dict[k['nome']] = {
+                "id": k['id'],
+                "preco": float(k['preco_sugerido']),
+                "descricao": items_desc
+            }
 
-            # 2. Temas
-            try:
-                lista_temas = sheet.worksheet("Temas").get_all_records()
-                categorias = {}
-                detalhes = {}
-                for row in lista_temas:
-                    cat, tema, desc = row['Categoria'], row['Tema'], row['Detalhes']
-                    categorias.setdefault(cat, []).append(tema)
-                    detalhes[tema] = desc
-            except:
-                categorias, detalhes = {}, {}
-
-            # 3. Kits
-            try:
-                lista_kits = sheet.worksheet("Kits").get_all_records()
-                kits = {}
-                for row in lista_kits:
-                    itens = [x.strip() for x in str(row['Descricao']).replace(';', '\n').split('\n') if x.strip()]
-                    val_str = str(row['Preco']).replace(',', '.')
-                    kits[row['Nome']] = {
-                        "preco": float(val_str) if val_str else 0.0,
-                        "descricao": itens
-                    }
-            except:
-                kits = {}
-
-            return acervo, categorias, kits, detalhes, estoque
-        except Exception as e:
-            st.error(f"Erro ao carregar configurações: {e}")
-            return {}, {}, {}, {}, {}
+        return acervo_dict, categorias, kits_dict, detalhes, estoque_dict
 
     @staticmethod
     def carregar_orcamentos() -> List[Dict]:
-        try:
-            client = GoogleSheetsService.get_connection()
-            ws = client.open_by_url(SHEET_URL).worksheet("Orcamentos")
-            records = ws.get_all_records()
-            dados = []
-            for row in records:
-                if row.get("DADOS_SISTEMA"):
-                    try:
-                        dados.append(json.loads(row["DADOS_SISTEMA"]))
-                    except:
-                        continue
-            return dados
-        except Exception as e:
-            print(f"Erro ao carregar orçamentos: {e}")
-            return []
+        supabase = SupabaseService.get_client()
 
+        # JOIN para trazer os itens reais (orcamento_itens -> acervo)
+        res = supabase.table("orcamentos").select(
+            "*, clientes(nome), orcamento_itens(quantidade, acervo(nome))"
+        ).execute()
+
+        lista_final = []
+        for row in res.data:
+            dados_form = row.get('dados_form_snapshot') or {}
+            tema_salvo = dados_form.get('in_tema', row.get('tema', '?'))
+
+            # Processa itens reais do banco para cálculo de estoque
+            lista_itens_reais = []
+            if row.get('orcamento_itens'):
+                for oi in row['orcamento_itens']:
+                    if oi.get('acervo') and oi.get('quantidade'):
+                        nome_item = oi['acervo']['nome']
+                        qtd = oi['quantidade']
+                        # Adiciona N vezes à lista para facilitar contagem simples no InventoryService
+                        lista_itens_reais.extend([nome_item] * qtd)
+
+            orcamento_obj = {
+                "id": row['id'],
+                "cliente": row['clientes']['nome'] if row['clientes'] else "Desconhecido",
+                "data_evento": row['data_evento'],
+                "status": row['status'],
+                "total": float(row['valor_total'] or 0.0),
+                "tema": tema_salvo,
+                "dados_form": dados_form,
+                "itens_reais_db": lista_itens_reais
+            }
+            lista_final.append(orcamento_obj)
+        return lista_final
+
+    @staticmethod
+    def get_dataframe(tabela_virtual: str) -> pd.DataFrame:
+        supabase = SupabaseService.get_client()
+
+        if tabela_virtual == "Itens":
+            res = supabase.table("acervo").select("*").order("nome").execute()
+            df = pd.DataFrame(res.data)
+            if not df.empty:
+                df.rename(columns={
+                    "nome": "Item", "foto_url": "Imagem", "preco_aluguel": "Preco",
+                    "quantidade_total": "Qtd_Estoque", "custo_aquisicao": "Custo_Unitario",
+                    "link_reposicao": "Link_Referencia", "tipo": "Tipo"
+                }, inplace=True)
+                if "Tipo" not in df.columns: df["Tipo"] = "Acervo"
+                df["Tipo"] = df["Tipo"].fillna("Acervo")
+            return df
+
+        elif tabela_virtual == "Kits":
+            res = supabase.table("kits").select("*").execute()
+            df = pd.DataFrame(res.data)
+            if not df.empty:
+                df.rename(columns={
+                    "nome": "Nome", "preco_sugerido": "Preco", "descricao_comercial": "Descricao"
+                }, inplace=True)
+            return df
+
+        elif tabela_virtual == "Temas":
+            res = supabase.table("temas").select("*").execute()
+            df = pd.DataFrame(res.data)
+            if not df.empty:
+                df.rename(columns={
+                    "nome": "Tema", "categoria": "Categoria", "detalhes": "Detalhes"
+                }, inplace=True)
+            return df
+
+        elif tabela_virtual == "Financeiro":
+            res = supabase.table("financeiro").select("*").order("created_at", desc=True).execute()
+            df = pd.DataFrame(res.data)
+            if not df.empty:
+                col_map = {
+                    "descricao": "Descrição", "tipo": "Tipo", "categoria": "Categoria",
+                    "valor": "Valor", "data_pagamento": "Data", "quem_pagou_recebeu": "Quem",
+                    "forma_pagamento": "Forma Pagto"
+                }
+                df.rename(columns=col_map, inplace=True)
+            return df
+
+        return pd.DataFrame()
+
+    # ------------------------------------------------------------------
+    # 3. GRAVAÇÃO (UPSERT INTELIGENTE COM RELACIONAMENTOS)
+    # ------------------------------------------------------------------
     @staticmethod
     def upsert_orcamento(orcamento: Dict):
-        try:
-            client = GoogleSheetsService.get_connection()
-            ws = client.open_by_url(SHEET_URL).worksheet("Orcamentos")
+        supabase = SupabaseService.get_client()
+        dados_form = orcamento.get('dados_form', {})
 
-            row_data = [
-                orcamento.get('id'),
-                orcamento.get('cliente'),
-                orcamento.get('data_evento'),
-                orcamento.get('status'),
-                f"R$ {orcamento.get('total', 0):.2f}".replace('.', ','),
-                json.dumps(orcamento, default=str)
-            ]
-
-            cell = ws.find(str(orcamento['id']), in_column=1)
-
-            if cell:
-                range_name = f"A{cell.row}:F{cell.row}"
-                ws.update(range_name=range_name, values=[row_data])
+        # Sanitiza Datas do form
+        dados_form_serializable = {}
+        for k, v in dados_form.items():
+            if isinstance(v, (date, datetime, dt_time)):
+                dados_form_serializable[k] = str(v)
             else:
-                ws.append_row(row_data)
+                dados_form_serializable[k] = v
 
-        except Exception as e:
-            st.error(f"Erro ao salvar no Google Sheets: {e}")
-            raise e
+        # A. Cliente - INCLUINDO EMAIL E DATA NASCIMENTO
+        cli_nome = dados_form.get('in_nome')
+        cli_cpf = dados_form.get('in_cpf')
+
+        # Tratamento da data de nascimento para string (Postgres Date)
+        nasc = dados_form.get('in_nascimento')
+        if isinstance(nasc, (date, datetime)):
+            nasc = str(nasc)
+        else:
+            nasc = None
+
+        cliente_payload = {
+            "nome": cli_nome,
+            "cpf": cli_cpf if cli_cpf else None,
+            "telefone": dados_form.get('in_telefone'),
+            "email": dados_form.get('in_email'),
+            "data_nascimento": nasc,
+            "cep": dados_form.get('in_cli_cep'),
+            "logradouro": dados_form.get('in_cli_rua'),
+            "numero": dados_form.get('in_cli_num'),
+            "bairro": dados_form.get('in_cli_bairro'),
+            "cidade": dados_form.get('in_cli_cidade')
+        }
+
+        res_cli = supabase.table("clientes").select("id").eq("nome", cli_nome).execute()
+        if res_cli.data:
+            cliente_id = res_cli.data[0]['id']
+            # Atualiza o cliente existente
+            supabase.table("clientes").update(cliente_payload).eq("id", cliente_id).execute()
+        else:
+            # Cria novo cliente
+            res_new_cli = supabase.table("clientes").insert(cliente_payload).execute()
+            cliente_id = res_new_cli.data[0]['id']
+
+        # B. Orçamento Header
+        orc_payload = {
+            "cliente_id": cliente_id,
+            "data_evento": str(orcamento['data_evento']),
+            "status": orcamento['status'],
+            "logistica_tipo": dados_form.get('in_entrega', 'Pegue e Monte'),
+            "endereco_evento_rua": dados_form.get('in_evt_rua'),
+            "endereco_evento_numero": dados_form.get('in_evt_num'),
+            "endereco_evento_bairro": dados_form.get('in_evt_bairro'),
+            "endereco_evento_cidade": dados_form.get('in_evt_cidade'),
+            "valor_total": orcamento['total'],
+            "valor_itens": orcamento.get('valor_itens', 0),
+            "valor_servicos": orcamento.get('valor_servicos', 0),
+            "valor_desconto": orcamento.get('valor_desconto', 0),
+            "dados_form_snapshot": dados_form_serializable
+        }
+
+        orc_id = orcamento.get('id')
+        if orc_id and isinstance(orc_id, int) and orc_id < 1000000000:
+            res_orc = supabase.table("orcamentos").update(orc_payload).eq("id", orc_id).execute()
+            final_orc_id = orc_id
+        else:
+            res_orc = supabase.table("orcamentos").insert(orc_payload).execute()
+            final_orc_id = res_orc.data[0]['id']
+            orcamento['id'] = final_orc_id
+
+        # C. Salvar Itens (Explode kit para itens reais)
+        supabase.table("orcamento_itens").delete().eq("orcamento_id", final_orc_id).execute()
+
+        # 1. Identificar se foi selecionado um KIT
+        kit_selecionado_nome = dados_form.get('in_kit')
+        kit_id_db = None
+        itens_do_kit_map = {}  # {nome: quantidade}
+
+        if kit_selecionado_nome and kit_selecionado_nome != "Montar Personalizado (Do Zero)":
+            res_kit = supabase.table("kits").select("id").eq("nome", kit_selecionado_nome).execute()
+            if res_kit.data:
+                kit_id_db = res_kit.data[0]['id']
+                # Busca composição: IDs e Qtds dos itens que compõem o kit
+                res_comp = supabase.table("kit_itens").select("quantidade, acervo(nome)").eq("kit_id",
+                                                                                             kit_id_db).execute()
+                for comp in res_comp.data:
+                    if comp['acervo']:
+                        itens_do_kit_map[comp['acervo']['nome']] = comp['quantidade']
+
+        # 2. Preparar lista consolidada de nomes de itens
+        lista_base = dados_form.get('in_itens_pers', [])
+
+        # Garante que itens do kit estejam na lista
+        if kit_id_db:
+            for nome_item_kit in itens_do_kit_map.keys():
+                if nome_item_kit not in lista_base:
+                    lista_base.append(nome_item_kit)
+
+        lista_add = dados_form.get('in_itens_add', [])
+        todos_itens_nomes = list(set(lista_base + lista_add))  # Remove duplicatas
+
+        if todos_itens_nomes:
+            # Busca todos os IDs e preços no acervo
+            res_ids = supabase.table("acervo").select("id, nome, preco_aluguel").in_("nome",
+                                                                                     todos_itens_nomes).execute()
+            mapa_acervo = {i['nome']: i for i in res_ids.data}
+
+            itens_insert = []
+
+            # Processa Itens da Base (Kit ou Personalizado)
+            for nome_item in lista_base:
+                if nome_item in mapa_acervo:
+                    dados_db = mapa_acervo[nome_item]
+
+                    eh_do_kit = (kit_id_db is not None and nome_item in itens_do_kit_map)
+                    origem_kit = kit_id_db if eh_do_kit else None
+                    qtd = itens_do_kit_map[nome_item] if eh_do_kit else 1
+
+                    itens_insert.append({
+                        "orcamento_id": final_orc_id,
+                        "item_acervo_id": dados_db['id'],
+                        "quantidade": qtd,
+                        "preco_unitario_cobrado": dados_db['preco_aluguel'],
+                        "origem_kit_id": origem_kit
+                    })
+
+            # Processa Itens Adicionais (Sempre avulsos)
+            for nome_item in lista_add:
+                if nome_item in mapa_acervo:
+                    dados_db = mapa_acervo[nome_item]
+                    itens_insert.append({
+                        "orcamento_id": final_orc_id,
+                        "item_acervo_id": dados_db['id'],
+                        "quantidade": 1,
+                        "preco_unitario_cobrado": dados_db['preco_aluguel'],
+                        "origem_kit_id": None
+                    })
+
+            if itens_insert:
+                supabase.table("orcamento_itens").insert(itens_insert).execute()
 
     @staticmethod
-    def get_dataframe(worksheet_name: str) -> pd.DataFrame:
-        try:
-            client = GoogleSheetsService.get_connection()
-            sheet = client.open_by_url(SHEET_URL)
-            ws = sheet.worksheet(worksheet_name)
-            return pd.DataFrame(ws.get_all_records())
-        except Exception as e:
-            st.error(f"Erro ao ler aba {worksheet_name}: {e}")
-            return pd.DataFrame()
+    def salvar_dataframe(tabela_virtual: str, df: pd.DataFrame):
+        supabase = SupabaseService.get_client()
+        records = df.to_dict(orient="records")
 
-    @staticmethod
-    def salvar_dataframe(worksheet_name: str, df: pd.DataFrame):
-        try:
-            client = GoogleSheetsService.get_connection()
-            sheet = client.open_by_url(SHEET_URL)
-            ws = sheet.worksheet(worksheet_name)
-            dados = [df.columns.values.tolist()] + df.astype(str).values.tolist()
-            ws.clear()
-            ws.update(dados)
-        except Exception as e:
-            st.error(f"Erro ao salvar {worksheet_name}: {e}")
-            raise e
+        if tabela_virtual == "Itens":
+            for row in records:
+                tipo_valor = row.get('Tipo')
+                if not tipo_valor or pd.isna(tipo_valor): tipo_valor = 'Acervo'
+                try:
+                    qtd = int(float(row.get('Qtd_Estoque', 1) or 1))
+                except:
+                    qtd = 1
+
+                payload = {
+                    "nome": row['Item'], "categoria": "Geral", "tipo": tipo_valor,
+                    "preco_aluguel": row.get('Preco', 0), "quantidade_total": qtd,
+                    "custo_aquisicao": row.get('Custo_Unitario', 0), "link_reposicao": row.get('Link_Referencia', ''),
+                    "foto_url": row.get('Imagem', ''), "ativo": row.get('ativo', True)
+                }
+                if row.get('id') and pd.notna(row.get('id')):
+                    supabase.table("acervo").update(payload).eq("id", int(row['id'])).execute()
+                else:
+                    res = supabase.table("acervo").select("id").eq("nome", row['Item']).execute()
+                    if res.data:
+                        supabase.table("acervo").update(payload).eq("id", res.data[0]['id']).execute()
+                    else:
+                        supabase.table("acervo").insert(payload).execute()
+
+        elif tabela_virtual == "Kits":
+            for row in records:
+                kit_nome = row['Nome']
+                kit_desc = row['Descricao']
+                payload = {"nome": kit_nome, "preco_sugerido": row['Preco'], "descricao_comercial": kit_desc}
+
+                kit_id = None
+                if 'id' in row and pd.notna(row['id']):
+                    kit_id = int(row['id'])
+                    supabase.table("kits").update(payload).eq("id", kit_id).execute()
+                else:
+                    res = supabase.table("kits").select("id").eq("nome", kit_nome).execute()
+                    if res.data:
+                        kit_id = res.data[0]['id']
+                        supabase.table("kits").update(payload).eq("id", kit_id).execute()
+                    else:
+                        res_new = supabase.table("kits").insert(payload).execute()
+                        kit_id = res_new.data[0]['id']
+
+                if kit_id and kit_desc:
+                    supabase.table("kit_itens").delete().eq("kit_id", kit_id).execute()
+                    itens_para_inserir = []
+                    partes = str(kit_desc).split(';')
+
+                    for p in partes:
+                        p = p.strip()
+                        if not p: continue
+                        qtd = 1
+                        nome_item = p
+
+                        if "x " in p:
+                            try:
+                                q_str, n_str = p.split("x ", 1)
+                                if q_str.strip().isdigit():
+                                    qtd = int(q_str)
+                                    nome_item = n_str.strip()
+                            except:
+                                pass
+
+                        res_item = supabase.table("acervo").select("id").eq("nome", nome_item).execute()
+                        if res_item.data:
+                            item_id = res_item.data[0]['id']
+                            itens_para_inserir.append({
+                                "kit_id": kit_id,
+                                "item_acervo_id": item_id,
+                                "quantidade": qtd
+                            })
+
+                    if itens_para_inserir:
+                        supabase.table("kit_itens").insert(itens_para_inserir).execute()
+
+        elif tabela_virtual == "Temas":
+            for row in records:
+                tema_nome = row['Tema']
+                tema_desc = row['Detalhes']
+                payload = {"nome": tema_nome, "categoria": row['Categoria'], "detalhes": tema_desc}
+
+                tema_id = None
+                if 'id' in row and pd.notna(row['id']):
+                    tema_id = int(row['id'])
+                    supabase.table("temas").update(payload).eq("id", tema_id).execute()
+                else:
+                    res = supabase.table("temas").select("id").eq("nome", tema_nome).execute()
+                    if res.data:
+                        tema_id = res.data[0]['id']
+                        supabase.table("temas").update(payload).eq("id", tema_id).execute()
+                    else:
+                        res_new = supabase.table("temas").insert(payload).execute()
+                        tema_id = res_new.data[0]['id']
+
+                if tema_id and tema_desc and "Base:" in tema_desc:
+                    try:
+                        _, parte_itens = tema_desc.split("Base:", 1)
+                        nomes = [x.strip() for x in parte_itens.split(',')]
+                        supabase.table("tema_itens").delete().eq("tema_id", tema_id).execute()
+                        inserts = []
+                        for nm in nomes:
+                            res_it = supabase.table("acervo").select("id").eq("nome", nm).execute()
+                            if res_it.data:
+                                inserts.append({
+                                    "tema_id": tema_id,
+                                    "item_acervo_id": res_it.data[0]['id']
+                                })
+                        if inserts:
+                            supabase.table("tema_itens").insert(inserts).execute()
+                    except:
+                        pass
 
     @staticmethod
     def registrar_transacao(transacao: Dict, update_estoque: Dict = None):
-        """Salva a transação financeira e atualiza o estoque (novo ou existente)."""
-        client = GoogleSheetsService.get_connection()
-        sheet = client.open_by_url(SHEET_URL)
-
-        # 1. Salvar na aba Financeiro
+        supabase = SupabaseService.get_client()
         try:
-            ws_fin = sheet.worksheet("Financeiro")
-            row = [
-                transacao['id'], transacao['data'], transacao['tipo'], transacao['categoria'],
-                transacao['descricao'], transacao['valor'], transacao['quem'],
-                transacao['forma_pagto'], transacao['status'], transacao.get('loja', ''), transacao.get('link', '')
-            ]
-            ws_fin.append_row(row)
-        except Exception as e:
-            raise Exception(f"Erro ao salvar financeiro: {e}")
+            d_venc = str(transacao['data'])
+        except:
+            d_venc = str(date.today())
 
-        # 2. Atualizar Estoque (se houver payload de estoque)
+        payload = {
+            "descricao": transacao['descricao'], "tipo": transacao['tipo'],
+            "categoria": transacao['categoria'], "valor": transacao['valor'],
+            "data_vencimento": d_venc,
+            "data_pagamento": d_venc if transacao['status'] in ['Pago', 'Recebido'] else None,
+            "quem_pagou_recebeu": transacao['quem'], "forma_pagamento": transacao['forma_pagto']
+        }
+
+        supabase.table("financeiro").insert(payload).execute()
+
         if update_estoque:
-            try:
-                ws_itens = sheet.worksheet("Itens")
-                item_nome = update_estoque['item']
-                qtd_compra = update_estoque['qtd']
-                custo_unit = update_estoque['custo']
-                loja = update_estoque['loja']
-                link = update_estoque['link']
-                novo_preco_locacao = update_estoque.get('preco_locacao', 0.0)
-                eh_novo = update_estoque.get('is_new', False)
-
-                if eh_novo:
-                    nova_linha = [item_nome, novo_preco_locacao, "Acervo", qtd_compra, custo_unit, loja, link, ""]
-                    ws_itens.append_row(nova_linha)
-                else:
-                    cell = ws_itens.find(item_nome, in_column=1)
-                    if cell:
-                        row_idx = cell.row
-                        est_atual = int(ws_itens.cell(row_idx, 4).value or 0)
-                        novo_estoque = est_atual + qtd_compra
-                        ws_itens.update_cell(row_idx, 4, novo_estoque)  # Qtd
-                        ws_itens.update_cell(row_idx, 5, custo_unit)  # Custo
-                        ws_itens.update_cell(row_idx, 6, loja)  # Loja
-                        ws_itens.update_cell(row_idx, 7, link)  # Link
-                    else:
-                        nova_linha = [item_nome, 0.0, "Acervo", qtd_compra, custo_unit, loja, link, ""]
-                        ws_itens.append_row(nova_linha)
-
-            except Exception as e:
-                raise Exception(f"Transação salva, mas erro ao atualizar estoque: {e}")
+            item_payload = {
+                "nome": update_estoque['item'], "quantidade_total": update_estoque['qtd'],
+                "custo_aquisicao": update_estoque['custo'], "link_reposicao": update_estoque['link'],
+                "categoria": "Novo", "tipo": "Acervo", "ativo": True
+            }
+            res = supabase.table("acervo").select("*").eq("nome", update_estoque['item']).execute()
+            if res.data:
+                nova_qtd = res.data[0]['quantidade_total'] + update_estoque['qtd']
+                supabase.table("acervo").update({"quantidade_total": nova_qtd}).eq("id", res.data[0]['id']).execute()
+            else:
+                supabase.table("acervo").insert(item_payload).execute()
 
 
+# ==========================================
+# SERVIÇOS AUXILIARES
+# ==========================================
 class InventoryService:
-    """Gerencia lógica de disponibilidade com Otimização (Cache)."""
-
     @staticmethod
-    @st.cache_data(show_spinner=False)
     def calcular_mapa_ocupacao(orcamentos: List[Dict]) -> Dict[str, Dict[str, int]]:
-        """Cria mapa de ocupação por dia/item para consulta rápida."""
         mapa = {}
         for orc in orcamentos:
             if orc.get('status') in ['Cancelado', 'Reprovado']: continue
-            data_str = orc.get('data_evento')
-            if not data_str: continue
-            if data_str not in mapa: mapa[data_str] = {}
+            d_evt = orc.get('data_evento')
+            if not d_evt: continue
 
-            dados = orc.get('dados_form', {})
-            itens = dados.get('in_itens_pers', []) + dados.get('in_itens_add', [])
+            # CORREÇÃO: Lê os itens reais carregados do banco (campo auxiliar)
+            itens = orc.get('itens_reais_db', [])
 
-            for item in itens:
-                mapa[data_str][item] = mapa[data_str].get(item, 0) + 1
+            # Fallback para o modo antigo (JSON)
+            if not itens:
+                dados = orc.get('dados_form', {})
+                itens = dados.get('in_itens_pers', []) + dados.get('in_itens_add', [])
+
+            if str(d_evt) not in mapa: mapa[str(d_evt)] = {}
+
+            for i in itens:
+                mapa[str(d_evt)][i] = mapa[str(d_evt)].get(i, 0) + 1
+
         return mapa
 
     @staticmethod
     def verificar_disponibilidade_rapida(item_nome: str, data_evento: str, estoque_total: int, mapa_ocupacao: Dict) -> \
             Tuple[int, int]:
-        """Consulta rápida no mapa O(1)."""
-        data_str = str(data_evento)
-        uso_dia = mapa_ocupacao.get(data_str, {}).get(item_nome, 0)
-        saldo = estoque_total - uso_dia
-        return uso_dia, saldo
+        uso = mapa_ocupacao.get(str(data_evento), {}).get(item_nome, 0)
+        return uso, estoque_total - uso
 
 
 class PDFGenerator:
-    """Responsável apenas pela criação do arquivo PDF."""
-
     @staticmethod
     def _clean_text(text: str) -> str:
         if not text: return ""
@@ -433,8 +646,6 @@ class PDFGenerator:
 
 
 class EmailService:
-    """Gerencia integração com Autentique."""
-
     @staticmethod
     def enviar_contrato(caminho_pdf: str, email_cliente: str) -> Tuple[bool, str]:
         token = st.secrets.get("AUTENTIQUE_TOKEN", "")
@@ -446,25 +657,20 @@ class EmailService:
           }
         }
         """
-        variables = {
-            "document": {"name": "Contrato de Locação - NT Festas"},
-            "signers": [{"email": email_cliente, "action": "SIGN"}]
-        }
+        variables = {"document": {"name": "Contrato de Locação - NT Festas"},
+                     "signers": [{"email": email_cliente, "action": "SIGN"}]}
         try:
             with open(caminho_pdf, "rb") as f:
-                response = requests.post(
-                    AUTENTIQUE_URL,
-                    data={"operations": json.dumps({"query": query, "variables": variables}),
-                          "map": json.dumps({"0": ["variables.file"]})},
-                    files={"0": f},
-                    headers={"Authorization": f"Bearer {token}"}
-                )
+                response = requests.post(AUTENTIQUE_URL,
+                                         data={"operations": json.dumps({"query": query, "variables": variables}),
+                                               "map": json.dumps({"0": ["variables.file"]})}, files={"0": f},
+                                         headers={"Authorization": f"Bearer {token}"})
             if response.status_code == 200:
                 dados = response.json()
                 if dados.get("errors"): return False, f"Erro API: {dados['errors'][0]['message']}"
-                doc_data = dados.get("data", {}).get("createDocument", {})
-                sigs = doc_data.get("signatures", [])
-                link = next((s["link"]["short_link"] for s in sigs if s.get("link")), "EMAIL_ENVIADO")
+                link = next((s["link"]["short_link"] for s in
+                             dados.get("data", {}).get("createDocument", {}).get("signatures", []) if s.get("link")),
+                            "EMAIL_ENVIADO")
                 return True, link
             return False, f"Erro HTTP {response.status_code}"
         except Exception as e:

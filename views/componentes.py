@@ -1,18 +1,27 @@
 import streamlit as st
 from datetime import date
-from services import GoogleSheetsService
+from services import SupabaseService
+
 
 def init_session_state():
     if 'db_orcamentos' not in st.session_state:
-        st.session_state['db_orcamentos'] = GoogleSheetsService.carregar_orcamentos()
+        st.session_state['db_orcamentos'] = SupabaseService.carregar_orcamentos()
     if 'edit_id' not in st.session_state: st.session_state['edit_id'] = None
     if 'navegacao_atual' not in st.session_state: st.session_state['navegacao_atual'] = "📝 Novo Orçamento"
     if 'feedback_msg' not in st.session_state: st.session_state['feedback_msg'] = None
+
+    # --- LISTA ATUALIZADA COM EMAIL E NASCIMENTO ---
     keys_end = ["in_cli_rua", "in_cli_bairro", "in_cli_cidade", "in_cli_num",
                 "in_evt_rua", "in_evt_bairro", "in_evt_cidade", "in_evt_num",
-                "in_evt_cep", "in_cli_cep"]
+                "in_evt_cep", "in_cli_cep", "in_email", "in_nascimento"]
+
     for k in keys_end:
         if k not in st.session_state: st.session_state[k] = ""
+
+    # Garante que nascimento comece como None para não ter data padrão se não quiser
+    if st.session_state['in_nascimento'] == "":
+        st.session_state['in_nascimento'] = None
+
 
 def reset_form_state():
     keys_to_delete = [k for k in st.session_state.keys() if k.startswith("in_")]
@@ -20,6 +29,7 @@ def reset_form_state():
         del st.session_state[k]
     st.session_state['in_data'] = date.today()
     init_session_state()
+
 
 def handle_feedback():
     if st.session_state.get('feedback_msg'):
@@ -30,6 +40,7 @@ def handle_feedback():
         else:
             st.error(msg)
         st.session_state['feedback_msg'] = None
+
 
 def render_sidebar():
     with st.sidebar:

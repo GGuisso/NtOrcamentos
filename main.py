@@ -8,7 +8,7 @@ from views.historico import render_historico
 from views.financeiro import render_financeiro
 from views.gestao import render_gestao
 from views.calendario import render_calendario  # <--- NOVA IMPORTAÇÃO
-from services import GoogleSheetsService
+from services import SupabaseService
 
 # ==========================================
 # CONFIGURAÇÃO INICIAL
@@ -25,7 +25,7 @@ def main():
     init_session_state()
 
     # Carrega dados do backend
-    acervo, categorias, kits, detalhes, estoque_dict = GoogleSheetsService.carregar_catalogo()
+    acervo, categorias, kits, detalhes, estoque_dict = SupabaseService.carregar_catalogo()
 
     # Processa feedbacks (toast/balões)
     handle_feedback()

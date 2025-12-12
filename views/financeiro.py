@@ -1,8 +1,10 @@
+#financeiro.py
+
 import streamlit as st
 import pandas as pd
 import time
 from datetime import date
-from services import GoogleSheetsService
+from services import SupabaseService
 
 def render_financeiro(acervo_dict):
     st.header("💰 Controle Financeiro")
@@ -99,7 +101,7 @@ def render_financeiro(acervo_dict):
                         "preco_locacao": custo_locacao
                     }
                 with st.spinner("Salvando..."):
-                    GoogleSheetsService.registrar_transacao(transacao, dados_estoque)
+                    SupabaseService.registrar_transacao(transacao, dados_estoque)
                     st.cache_data.clear()
                     st.success("Lançamento salvo!")
                     time.sleep(1)
@@ -107,7 +109,7 @@ def render_financeiro(acervo_dict):
 
     with tab_dash:
         st.subheader("Extrato")
-        df_fin = GoogleSheetsService.get_dataframe("Financeiro")
+        df_fin = SupabaseService.get_dataframe("Financeiro")
         if not df_fin.empty:
             df_fin['Valor'] = pd.to_numeric(df_fin['Valor'], errors='coerce').fillna(0.0)
             receitas = df_fin[df_fin['Tipo'] == 'Receita']['Valor'].sum()
