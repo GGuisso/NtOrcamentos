@@ -1,8 +1,10 @@
+#historico.py
+
 import streamlit as st
 import datetime
 import time
 from datetime import date
-from services import GoogleSheetsService
+from services import SupabaseService
 from views.componentes import reset_form_state
 
 
@@ -102,11 +104,11 @@ def dialog_gerenciar_status(orcamento):
     if financeiro_payload:
         if financeiro_payload != "SKIP":
             with st.spinner("Lançando no Financeiro..."):
-                GoogleSheetsService.registrar_transacao(financeiro_payload)
+                SupabaseService.registrar_transacao(financeiro_payload)
 
         with st.spinner("Atualizando Status..."):
             orcamento['status'] = novo_status
-            GoogleSheetsService.upsert_orcamento(orcamento)
+            SupabaseService.upsert_orcamento(orcamento)
 
             # Atualiza Cache Local
             st.session_state['db_orcamentos'] = [
