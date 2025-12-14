@@ -18,9 +18,15 @@ def init_session_state():
     for k in keys_end:
         if k not in st.session_state: st.session_state[k] = ""
 
-    # Garante que nascimento comece como None para não ter data padrão se não quiser
+    # Garante que nascimento comece como None
     if st.session_state['in_nascimento'] == "":
         st.session_state['in_nascimento'] = None
+
+    # --- CORREÇÃO DO ERRO KEYERROR (Custos Padrão) ---
+    # Isso garante que o cálculo funcione mesmo se o menu lateral não carregar
+    if 'cfg_km' not in st.session_state: st.session_state['cfg_km'] = 2.00
+    if 'cfg_hora' not in st.session_state: st.session_state['cfg_hora'] = 50.00
+    if 'cfg_taxa' not in st.session_state: st.session_state['cfg_taxa'] = 20.00
 
 
 def reset_form_state():

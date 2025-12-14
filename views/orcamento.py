@@ -65,6 +65,8 @@ def render_area_contrato(dados_cli, dados_evt, itens, total, sinal, restante):
 
 
 def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
+    st.header("📝 Novo Orçamento")
+
     bloqueado = False
     status_atual = "Novo"
 
