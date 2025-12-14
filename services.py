@@ -675,3 +675,34 @@ class EmailService:
             return False, f"Erro HTTP {response.status_code}"
         except Exception as e:
             return False, f"Erro Técnico: {e}"
+
+class AuthService:
+    @staticmethod
+    def login(email, senha):
+        supabase = SupabaseService.get_client()
+        try:
+            # Tenta logar usando o Auth do Supabase
+            response = supabase.auth.sign_in_with_password({"email": email, "password": senha})
+            if response.user:
+                return True, response.user
+            return False, "Credenciais inválidas."
+        except Exception as e:
+            return False, str(e)
+
+    @staticmethod
+    def logout():
+        supabase = SupabaseService.get_client()
+        try:
+            supabase.auth.sign_out()
+            return True
+        except:
+            return False
+
+    @staticmethod
+    def get_current_user():
+        # Verifica se existe sessão ativa
+        supabase = SupabaseService.get_client()
+        session = supabase.auth.get_session()
+        if session:
+            return session.user
+        return None
