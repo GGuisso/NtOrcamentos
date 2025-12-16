@@ -10,7 +10,9 @@ def init_session_state():
     if 'navegacao_atual' not in st.session_state: st.session_state['navegacao_atual'] = "📝 Novo Orçamento"
     if 'feedback_msg' not in st.session_state: st.session_state['feedback_msg'] = None
 
-    # --- LISTA ATUALIZADA COM EMAIL E NASCIMENTO ---
+    # --- NOVO: Inicializa tenant_id na sessão ---
+    if 'tenant_id' not in st.session_state: st.session_state['tenant_id'] = None
+
     keys_end = ["in_cli_rua", "in_cli_bairro", "in_cli_cidade", "in_cli_num",
                 "in_evt_rua", "in_evt_bairro", "in_evt_cidade", "in_evt_num",
                 "in_evt_cep", "in_cli_cep", "in_email", "in_nascimento"]
@@ -22,8 +24,7 @@ def init_session_state():
     if st.session_state['in_nascimento'] == "":
         st.session_state['in_nascimento'] = None
 
-    # --- CORREÇÃO DO ERRO KEYERROR (Custos Padrão) ---
-    # Isso garante que o cálculo funcione mesmo se o menu lateral não carregar
+    # Custos Padrão
     if 'cfg_km' not in st.session_state: st.session_state['cfg_km'] = 2.00
     if 'cfg_hora' not in st.session_state: st.session_state['cfg_hora'] = 50.00
     if 'cfg_taxa' not in st.session_state: st.session_state['cfg_taxa'] = 20.00
@@ -49,13 +50,6 @@ def handle_feedback():
 
 
 def render_sidebar():
-    with st.sidebar:
-        st.title("NT Festas")
-        st.markdown("---")
-        if st.button("🔄 Atualizar Estoque/Temas"):
-            st.cache_data.clear()
-            st.rerun()
-        st.header("⚙️ Custos Operacionais")
-        st.number_input("Custo KM", value=st.session_state.get('cfg_km', 2.00), step=0.10, key='cfg_km')
-        st.number_input("Valor Hora Técnica", value=st.session_state.get('cfg_hora', 50.00), step=5.00, key='cfg_hora')
-        st.number_input("Taxa Higienização", value=st.session_state.get('cfg_taxa', 20.00), key='cfg_taxa')
+    # A barra lateral agora é renderizada no main.py,
+    # mas mantemos a função vazia ou para componentes globais se precisar
+    pass

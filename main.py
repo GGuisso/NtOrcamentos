@@ -26,17 +26,17 @@ def run_app():
     # Processa feedbacks (toast/balões)
     handle_feedback()
 
-    # Pega usuário logado
+    # Pega usuário logado (Dicionário retornado pelo AuthService)
     usuario = st.session_state.get('usuario_logado')
-    email_user = usuario.email if usuario else ""
+
+    email_user = usuario['email'] if usuario else ""
+    role_user = usuario['role'] if usuario else "vendedor"  # Pega o cargo do banco
 
     # ----------------------------------------------------
-    # CONTROLE DE ACESSO (PERMISSÕES)
+    # CONTROLE DE ACESSO (PERMISSÕES VIA BANCO)
     # ----------------------------------------------------
-    # Defina aqui quem são os administradores
-    LISTA_ADMINS = ["ntfestasrs@gmail.com"]
-
-    eh_admin = email_user in LISTA_ADMINS
+    # Agora a verificação é dinâmica baseada na coluna 'role' da tabela profiles
+    eh_admin = (role_user == 'admin')
 
     # Menu Base (Todos veem)
     opcoes_menu = ["📝 Novo Orçamento", "📂 Histórico de Orçamentos", "📅 Calendário"]
@@ -47,44 +47,58 @@ def run_app():
     # ----------------------------------------------------
 
     # Renderiza Sidebar
-        # Renderiza Sidebar
-        with st.sidebar:
-            st.title("NT Festas")
-            st.caption(f"Logado como: {email_user}")
-            if eh_admin:
-                st.success("Acesso Admin 🔓")
-            else:
-                st.info("Acesso Vendedor 👤")
+    with st.sidebar:
+        st.title("NT Festas")
+        st.caption(f"Logado como: {email_user}")
 
+        # Mostra o badge de acordo com o cargo real
+        if eh_admin:
+            st.success(f"Perfil: {role_user.upper()} 🔓")
+        else:
+            st.info(f"Perfil: {role_user.upper()} 👤")
+
+        st.markdown("---")
+
+        # --- CORREÇÃO AQUI: SINCRONIZAÇÃO DO MENU ---
+        # 1. Descobre qual o índice da página atual na lista de opções
+        # Isso permite que o botão "Editar" do histórico mude o menu automaticamente
+        nav_atual = st.session_state.get('navegacao_atual', "📝 Novo Orçamento")
+        try:
+            idx_nav = opcoes_menu.index(nav_atual)
+        except ValueError:
+            idx_nav = 0 # Se não achar (ex: mudou de permissão), vai para o primeiro
+
+        # 2. Cria o Radio Button usando esse índice
+        nav = st.radio("Menu", opcoes_menu, index=idx_nav)
+
+        # 3. Se o usuário clicou no menu (mudou manualmente), atualiza a sessão
+        if nav != st.session_state.get('navegacao_atual'):
+            st.session_state['navegacao_atual'] = nav
+            st.rerun()
+        # ----------------------------------------------
+
+        # --- CUSTOS OPERACIONAIS (Só para Admin) ---
+        if eh_admin:
             st.markdown("---")
+            st.header("⚙️ Custos")
+            st.number_input("Custo KM", value=st.session_state.get('cfg_km', 2.00), step=0.10, key='cfg_km')
+            st.number_input("Vr. Hora Técnica", value=st.session_state.get('cfg_hora', 50.00), step=5.00,
+                            key='cfg_hora')
+            st.number_input("Taxa Higienização", value=st.session_state.get('cfg_taxa', 20.00), key='cfg_taxa')
 
-            # Menu de Navegação
-            nav = st.radio("Menu", opcoes_menu)
-
-            # --- AQUI: RECOLOCAMOS OS CUSTOS OPERACIONAIS (Só para Admin) ---
-            if eh_admin:
-                st.markdown("---")
-                st.header("⚙️ Custos")
-                st.number_input("Custo KM", value=st.session_state.get('cfg_km', 2.00), step=0.10, key='cfg_km')
-                st.number_input("Vr. Hora Técnica", value=st.session_state.get('cfg_hora', 50.00), step=5.00,
-                                key='cfg_hora')
-                st.number_input("Taxa Higienização", value=st.session_state.get('cfg_taxa', 20.00), key='cfg_taxa')
-
-                if st.button("🔄 Atualizar Dados"):
-                    st.cache_data.clear()
-                    st.rerun()
-            # ---------------------------------------------------------------
-
-            st.markdown("---")
-            # Botão de Logout
-            if st.button("Sair (Logout)"):
-                AuthService.logout()
-                st.session_state['usuario_logado'] = None
+            if st.button("🔄 Atualizar Dados"):
+                st.cache_data.clear()
                 st.rerun()
+        # ---------------------------------------------------------------
+
+        st.markdown("---")
+        # Botão de Logout
+        if st.button("Sair (Logout)"):
+            AuthService.logout()
+            st.session_state['usuario_logado'] = None
+            st.rerun()
 
     # Roteamento de Views
-    #st.header(nav)  # Título da página atual
-
     if nav == "📝 Novo Orçamento":
         render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict)
     elif nav == "📂 Histórico de Orçamentos":
@@ -92,12 +106,12 @@ def run_app():
     elif nav == "📅 Calendário":
         render_calendario()
     elif nav == "💰 Financeiro":
-        if eh_admin:  # Dupla verificação de segurança
+        if eh_admin:
             render_financeiro(acervo)
         else:
             st.error("Acesso negado.")
     elif nav == "⚙️ Gestão de Acervo":
-        if eh_admin:  # Dupla verificação de segurança
+        if eh_admin:
             render_gestao()
 
 

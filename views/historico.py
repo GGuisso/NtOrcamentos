@@ -1,9 +1,8 @@
-#historico.py
-
 import streamlit as st
 import datetime
 import time
 from datetime import date
+from functools import partial
 from services import SupabaseService
 from views.componentes import reset_form_state
 
@@ -23,7 +22,6 @@ def dialog_gerenciar_status(orcamento):
         "Reprovado"
     ]
 
-    # Encontra o índice atual. Se não achar (erro de dados), começa do zero.
     try:
         idx_atual = lista_status.index(orcamento['status'])
     except ValueError:
@@ -31,7 +29,6 @@ def dialog_gerenciar_status(orcamento):
 
     novo_status = st.selectbox("Novo Status", lista_status, index=idx_atual)
 
-    # Valores para sugestão
     total = orcamento.get('total', 0)
     sinal_estimado = total * 0.30
     restante_estimado = total * 0.70
@@ -39,8 +36,6 @@ def dialog_gerenciar_status(orcamento):
     financeiro_payload = None
 
     # --- LÓGICA FINANCEIRA ---
-
-    # 1. RESERVA (SINAL 30%)
     if novo_status == "Reserva Confirmada" and orcamento['status'] != "Reserva Confirmada":
         st.info("💰 Gerar lançamento de SINAL (30%)")
         val_sinal = st.number_input("Valor Recebido (R$)", value=sinal_estimado)
@@ -54,7 +49,6 @@ def dialog_gerenciar_status(orcamento):
                 "valor": val_sinal, "quem": "Sistema", "forma_pagto": forma, "status": "Recebido"
             }
 
-    # 2. RETIRADA (RESTANTE 70%)
     elif novo_status == "Itens Retirados" and orcamento['status'] != "Itens Retirados":
         st.info("🚚 O cliente está levando os itens? Hora de cobrar o restante!")
         val_rest = st.number_input("Valor Restante (R$)", value=restante_estimado)
@@ -72,14 +66,12 @@ def dialog_gerenciar_status(orcamento):
                     "valor": val_rest, "quem": "Sistema", "forma_pagto": forma, "status": "Recebido"
                 }
 
-    # 3. FINALIZADO (DEVOLUÇÃO)
     elif novo_status == "Finalizado":
         st.success("✅ O pedido será arquivado como concluído.")
         st.write("Verifique se houve quebras ou avarias antes de finalizar.")
         if st.button("Finalizar Pedido"):
             financeiro_payload = "SKIP"
 
-    # 4. CANCELAMENTO
     elif novo_status == "Cancelado":
         st.warning("⚠️ Cancelamento")
         houve_reembolso = st.checkbox("Houve reembolso?")
@@ -95,7 +87,6 @@ def dialog_gerenciar_status(orcamento):
             if st.button("Cancelar Sem Estorno"):
                 financeiro_payload = "SKIP"
 
-    # OUTROS (Reprovado, etc)
     else:
         if st.button("Atualizar Status"):
             financeiro_payload = "SKIP"
@@ -110,12 +101,41 @@ def dialog_gerenciar_status(orcamento):
             orcamento['status'] = novo_status
             SupabaseService.upsert_orcamento(orcamento)
 
-            # Atualiza Cache Local
             st.session_state['db_orcamentos'] = [
                 orcamento if o['id'] == orcamento['id'] else o
                 for o in st.session_state['db_orcamentos']
             ]
             st.rerun()
+
+
+# --- FUNÇÃO DE CARREGAMENTO CORRIGIDA ---
+def carregar_orcamento_para_edicao(oid, dados):
+    st.session_state['edit_id'] = oid
+
+    for k, v in dados.items():
+        # 1. Converte Data do Evento (se for string)
+        if k == 'in_data':
+            if isinstance(v, str):
+                try:
+                    v = datetime.datetime.strptime(v, '%Y-%m-%d').date()
+                except:
+                    pass
+
+        # 2. Converte Data de Nascimento (AQUI ESTAVA O ERRO)
+        # O banco manda string "1992-03-26", o date_input precisa de object date
+        if k == 'in_nascimento' and v is not None:
+            if isinstance(v, str):
+                try:
+                    v = datetime.datetime.strptime(v, '%Y-%m-%d').date()
+                except:
+                    v = None
+
+        st.session_state[k] = v
+
+    # Define a navegação para a tela de formulário
+    # O st.rerun() foi removido daqui para evitar o aviso "no-op" dentro do callback.
+    # O main.py detectará a mudança em 'navegacao_atual' e renderizará a tela correta.
+    st.session_state['navegacao_atual'] = "📝 Novo Orçamento"
 
 
 def render_historico():
@@ -133,19 +153,16 @@ def render_historico():
                      "Reprovado"]
     filtro_st = c_f2.multiselect("Filtrar por Status", opcoes_filtro)
 
-    # Ordenação e Filtros
     lista = sorted(db, key=lambda x: str(x['id']), reverse=True)
     if busca:
         lista = [x for x in lista if busca.lower() in x['cliente'].lower() or str(x['id']) in busca]
     if filtro_st:
         lista = [x for x in lista if x.get('status') in filtro_st]
 
-    # Renderização da Lista
     for orc in lista:
         with st.container():
             status = orc.get('status', 'Aguardando Aprovação')
 
-            # Mapa de Cores Limpo
             mapa_cores = {
                 "Aguardando Aprovação": "🟡",
                 "Reserva Confirmada": "🔵",
@@ -156,7 +173,6 @@ def render_historico():
             }
             cor = mapa_cores.get(status, "⚪")
 
-            # Layout do Card
             c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
 
             c1.markdown(f"**#{orc['id']} - {orc['cliente']}**")
@@ -167,24 +183,16 @@ def render_historico():
 
             bts = c4.columns([1, 1, 1])
 
-            # Botão Carregar/Editar
-            def _carregar(oid=orc['id'], dados=orc['dados_form']):
-                st.session_state['edit_id'] = oid
-                for k, v in dados.items():
-                    if k == 'in_data':
-                        try:
-                            v = datetime.datetime.strptime(v, '%Y-%m-%d').date()
-                        except:
-                            pass
-                    st.session_state[k] = v
-                st.session_state['navegacao_atual'] = "📝 Novo Orçamento"
-
-            # Só pode editar se ainda não foi aprovado
             pode_editar = (status == "Aguardando Aprovação")
-            bts[0].button("✏️" if pode_editar else "👁️", key=f"e_{orc['id']}", on_click=_carregar,
-                          help="Ver detalhes ou Editar")
 
-            # Botão Status
+            bts[0].button(
+                "✏️" if pode_editar else "👁️",
+                key=f"e_{orc['id']}",
+                on_click=carregar_orcamento_para_edicao,
+                args=(orc['id'], orc['dados_form']),
+                help="Ver detalhes ou Editar"
+            )
+
             if bts[1].button("🔄", key=f"st_{orc['id']}", help="Mudar Status"):
                 dialog_gerenciar_status(orc)
 

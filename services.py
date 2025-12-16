@@ -14,9 +14,9 @@ from fpdf import FPDF
 VIACEP_URL = "https://viacep.com.br/ws/{}/json/"
 AUTENTIQUE_URL = "https://api.autentique.com.br/v2/graphql"
 
-# ID DA EMPRESA (TENANT)
-TENANT_ID = "nt_festas_01"
 
+# ID DA EMPRESA (TENANT) - ANTIGO (Removido, agora é dinâmico)
+# TENANT_ID = "nt_festas_01"
 
 def get_secret(key_name):
     """Busca segura de chaves no secrets.toml."""
@@ -69,27 +69,26 @@ class SupabaseService:
         return create_client(SUPA_URL, SUPA_KEY, options=options)
 
     # ------------------------------------------------------------------
-    # 0. BUSCA DE CLIENTES (NOVO)
+    # 0. BUSCA DE CLIENTES
     # ------------------------------------------------------------------
     @staticmethod
     def buscar_clientes(termo: str, por_cpf: bool = False) -> List[Dict]:
-        """
-        Busca clientes por CPF exato ou Nome parcial (ilike).
-        """
         supabase = SupabaseService.get_client()
         termo = termo.strip()
         if not termo: return []
 
+        # Pega o tenant da sessão para filtrar (redundância de segurança além do RLS)
+        tenant = st.session_state.get('tenant_id')
+        if not tenant: return []
+
         try:
-            query = supabase.table("clientes").select("*")
+            query = supabase.table("clientes").select("*").eq("tenant_id", tenant)
 
             if por_cpf:
-                # Remove pontuação se houver, busca exata
                 cpf_limpo = "".join([c for c in termo if c.isdigit()])
                 if not cpf_limpo: return []
                 res = query.eq("cpf", cpf_limpo).execute()
             else:
-                # Busca parcial por nome (case insensitive)
                 res = query.ilike("nome", f"%{termo}%").execute()
 
             return res.data
@@ -104,9 +103,13 @@ class SupabaseService:
     def upload_imagem(file_obj, nome_arquivo_original: str) -> Optional[str]:
         try:
             supabase = SupabaseService.get_client()
+            tenant = st.session_state.get('tenant_id', 'public')
+
             nome_limpo = "".join(
                 [c for c in nome_arquivo_original if c.isalnum() or c in (' ', '_', '.', '-')]).replace(" ", "_")
-            path = f"{TENANT_ID}/{int(time.time())}_{nome_limpo}"
+
+            # Organiza pastas por Tenant no Storage
+            path = f"{tenant}/{int(time.time())}_{nome_limpo}"
 
             file_bytes = file_obj.getvalue()
             supabase.storage.from_("acervo").upload(
@@ -118,14 +121,19 @@ class SupabaseService:
             return None
 
     # ------------------------------------------------------------------
-    # 2. LEITURA DE DADOS
+    # 2. LEITURA DE DADOS (Agora filtrado por Tenant)
     # ------------------------------------------------------------------
     @staticmethod
     def carregar_catalogo() -> Tuple[Dict, Dict, Dict, Dict, Dict]:
         supabase = SupabaseService.get_client()
+        tenant = st.session_state.get('tenant_id')
+
+        # Se não tiver tenant (login falhou ou não aconteceu), retorna vazio
+        if not tenant:
+            return {}, {}, {}, {}, {}
 
         # A. Acervo
-        res_acervo = supabase.table("acervo").select("*").eq("ativo", True).execute()
+        res_acervo = supabase.table("acervo").select("*").eq("tenant_id", tenant).eq("ativo", True).execute()
         acervo_dict = {}
         estoque_dict = {}
         for item in res_acervo.data:
@@ -133,7 +141,7 @@ class SupabaseService:
             estoque_dict[item['nome']] = int(item['quantidade_total'])
 
         # B. Temas
-        res_temas = supabase.table("temas").select("*").execute()
+        res_temas = supabase.table("temas").select("*").eq("tenant_id", tenant).execute()
         categorias = {}
         detalhes = {}
         for t in res_temas.data:
@@ -144,7 +152,7 @@ class SupabaseService:
             detalhes[tema_nome] = t['detalhes'] or ""
 
         # C. Kits
-        res_kits = supabase.table("kits").select("*").execute()
+        res_kits = supabase.table("kits").select("*").eq("tenant_id", tenant).execute()
         kits_dict = {}
         for k in res_kits.data:
             items_desc = [x.strip() for x in str(k.get('descricao_comercial', '')).split(';') if x.strip()]
@@ -159,25 +167,24 @@ class SupabaseService:
     @staticmethod
     def carregar_orcamentos() -> List[Dict]:
         supabase = SupabaseService.get_client()
+        tenant = st.session_state.get('tenant_id')
+        if not tenant: return []
 
-        # JOIN para trazer os itens reais (orcamento_itens -> acervo)
         res = supabase.table("orcamentos").select(
             "*, clientes(nome), orcamento_itens(quantidade, acervo(nome))"
-        ).execute()
+        ).eq("tenant_id", tenant).execute()
 
         lista_final = []
         for row in res.data:
             dados_form = row.get('dados_form_snapshot') or {}
             tema_salvo = dados_form.get('in_tema', row.get('tema', '?'))
 
-            # Processa itens reais do banco para cálculo de estoque
             lista_itens_reais = []
             if row.get('orcamento_itens'):
                 for oi in row['orcamento_itens']:
                     if oi.get('acervo') and oi.get('quantidade'):
                         nome_item = oi['acervo']['nome']
                         qtd = oi['quantidade']
-                        # Adiciona N vezes à lista para facilitar contagem simples no InventoryService
                         lista_itens_reais.extend([nome_item] * qtd)
 
             orcamento_obj = {
@@ -196,9 +203,11 @@ class SupabaseService:
     @staticmethod
     def get_dataframe(tabela_virtual: str) -> pd.DataFrame:
         supabase = SupabaseService.get_client()
+        tenant = st.session_state.get('tenant_id')
+        if not tenant: return pd.DataFrame()
 
         if tabela_virtual == "Itens":
-            res = supabase.table("acervo").select("*").order("nome").execute()
+            res = supabase.table("acervo").select("*").eq("tenant_id", tenant).order("nome").execute()
             df = pd.DataFrame(res.data)
             if not df.empty:
                 df.rename(columns={
@@ -211,7 +220,7 @@ class SupabaseService:
             return df
 
         elif tabela_virtual == "Kits":
-            res = supabase.table("kits").select("*").execute()
+            res = supabase.table("kits").select("*").eq("tenant_id", tenant).execute()
             df = pd.DataFrame(res.data)
             if not df.empty:
                 df.rename(columns={
@@ -220,7 +229,7 @@ class SupabaseService:
             return df
 
         elif tabela_virtual == "Temas":
-            res = supabase.table("temas").select("*").execute()
+            res = supabase.table("temas").select("*").eq("tenant_id", tenant).execute()
             df = pd.DataFrame(res.data)
             if not df.empty:
                 df.rename(columns={
@@ -229,7 +238,8 @@ class SupabaseService:
             return df
 
         elif tabela_virtual == "Financeiro":
-            res = supabase.table("financeiro").select("*").order("created_at", desc=True).execute()
+            res = supabase.table("financeiro").select("*").eq("tenant_id", tenant).order("created_at",
+                                                                                         desc=True).execute()
             df = pd.DataFrame(res.data)
             if not df.empty:
                 col_map = {
@@ -243,14 +253,19 @@ class SupabaseService:
         return pd.DataFrame()
 
     # ------------------------------------------------------------------
-    # 3. GRAVAÇÃO (UPSERT INTELIGENTE COM RELACIONAMENTOS)
+    # 3. GRAVAÇÃO (MULTI-TENANT)
     # ------------------------------------------------------------------
     @staticmethod
     def upsert_orcamento(orcamento: Dict):
         supabase = SupabaseService.get_client()
+        tenant = st.session_state.get('tenant_id')
+        if not tenant:
+            st.error("Sessão expirada. Faça login novamente.")
+            return
+
         dados_form = orcamento.get('dados_form', {})
 
-        # Sanitiza Datas do form
+        # Sanitiza Datas
         dados_form_serializable = {}
         for k, v in dados_form.items():
             if isinstance(v, (date, datetime, dt_time)):
@@ -258,11 +273,9 @@ class SupabaseService:
             else:
                 dados_form_serializable[k] = v
 
-        # A. Cliente - INCLUINDO EMAIL E DATA NASCIMENTO
+        # A. Cliente
         cli_nome = dados_form.get('in_nome')
         cli_cpf = dados_form.get('in_cpf')
-
-        # Tratamento da data de nascimento para string (Postgres Date)
         nasc = dados_form.get('in_nascimento')
         if isinstance(nasc, (date, datetime)):
             nasc = str(nasc)
@@ -270,6 +283,7 @@ class SupabaseService:
             nasc = None
 
         cliente_payload = {
+            "tenant_id": tenant,  # <--- OBRIGATÓRIO
             "nome": cli_nome,
             "cpf": cli_cpf if cli_cpf else None,
             "telefone": dados_form.get('in_telefone'),
@@ -282,18 +296,17 @@ class SupabaseService:
             "cidade": dados_form.get('in_cli_cidade')
         }
 
-        res_cli = supabase.table("clientes").select("id").eq("nome", cli_nome).execute()
+        res_cli = supabase.table("clientes").select("id").eq("tenant_id", tenant).eq("nome", cli_nome).execute()
         if res_cli.data:
             cliente_id = res_cli.data[0]['id']
-            # Atualiza o cliente existente
             supabase.table("clientes").update(cliente_payload).eq("id", cliente_id).execute()
         else:
-            # Cria novo cliente
             res_new_cli = supabase.table("clientes").insert(cliente_payload).execute()
             cliente_id = res_new_cli.data[0]['id']
 
         # B. Orçamento Header
         orc_payload = {
+            "tenant_id": tenant,  # <--- OBRIGATÓRIO
             "cliente_id": cliente_id,
             "data_evento": str(orcamento['data_evento']),
             "status": orcamento['status'],
@@ -318,55 +331,48 @@ class SupabaseService:
             final_orc_id = res_orc.data[0]['id']
             orcamento['id'] = final_orc_id
 
-        # C. Salvar Itens (Explode kit para itens reais)
+        # C. Salvar Itens
         supabase.table("orcamento_itens").delete().eq("orcamento_id", final_orc_id).execute()
 
-        # 1. Identificar se foi selecionado um KIT
         kit_selecionado_nome = dados_form.get('in_kit')
         kit_id_db = None
-        itens_do_kit_map = {}  # {nome: quantidade}
+        itens_do_kit_map = {}
 
         if kit_selecionado_nome and kit_selecionado_nome != "Montar Personalizado (Do Zero)":
-            res_kit = supabase.table("kits").select("id").eq("nome", kit_selecionado_nome).execute()
+            res_kit = supabase.table("kits").select("id").eq("tenant_id", tenant).eq("nome",
+                                                                                     kit_selecionado_nome).execute()
             if res_kit.data:
                 kit_id_db = res_kit.data[0]['id']
-                # Busca composição: IDs e Qtds dos itens que compõem o kit
                 res_comp = supabase.table("kit_itens").select("quantidade, acervo(nome)").eq("kit_id",
                                                                                              kit_id_db).execute()
                 for comp in res_comp.data:
                     if comp['acervo']:
                         itens_do_kit_map[comp['acervo']['nome']] = comp['quantidade']
 
-        # 2. Preparar lista consolidada de nomes de itens
         lista_base = dados_form.get('in_itens_pers', [])
-
-        # Garante que itens do kit estejam na lista
         if kit_id_db:
             for nome_item_kit in itens_do_kit_map.keys():
                 if nome_item_kit not in lista_base:
                     lista_base.append(nome_item_kit)
 
         lista_add = dados_form.get('in_itens_add', [])
-        todos_itens_nomes = list(set(lista_base + lista_add))  # Remove duplicatas
+        todos_itens_nomes = list(set(lista_base + lista_add))
 
         if todos_itens_nomes:
-            # Busca todos os IDs e preços no acervo
-            res_ids = supabase.table("acervo").select("id, nome, preco_aluguel").in_("nome",
-                                                                                     todos_itens_nomes).execute()
+            res_ids = supabase.table("acervo").select("id, nome, preco_aluguel").eq("tenant_id", tenant).in_("nome",
+                                                                                                             todos_itens_nomes).execute()
             mapa_acervo = {i['nome']: i for i in res_ids.data}
 
             itens_insert = []
-
-            # Processa Itens da Base (Kit ou Personalizado)
             for nome_item in lista_base:
                 if nome_item in mapa_acervo:
                     dados_db = mapa_acervo[nome_item]
-
                     eh_do_kit = (kit_id_db is not None and nome_item in itens_do_kit_map)
                     origem_kit = kit_id_db if eh_do_kit else None
                     qtd = itens_do_kit_map[nome_item] if eh_do_kit else 1
 
                     itens_insert.append({
+                        "tenant_id": tenant,  # <--- OBRIGATÓRIO
                         "orcamento_id": final_orc_id,
                         "item_acervo_id": dados_db['id'],
                         "quantidade": qtd,
@@ -374,11 +380,11 @@ class SupabaseService:
                         "origem_kit_id": origem_kit
                     })
 
-            # Processa Itens Adicionais (Sempre avulsos)
             for nome_item in lista_add:
                 if nome_item in mapa_acervo:
                     dados_db = mapa_acervo[nome_item]
                     itens_insert.append({
+                        "tenant_id": tenant,  # <--- OBRIGATÓRIO
                         "orcamento_id": final_orc_id,
                         "item_acervo_id": dados_db['id'],
                         "quantidade": 1,
@@ -392,18 +398,21 @@ class SupabaseService:
     @staticmethod
     def salvar_dataframe(tabela_virtual: str, df: pd.DataFrame):
         supabase = SupabaseService.get_client()
+        tenant = st.session_state.get('tenant_id')
+        if not tenant: return
+
         records = df.to_dict(orient="records")
 
         if tabela_virtual == "Itens":
             for row in records:
-                tipo_valor = row.get('Tipo')
-                if not tipo_valor or pd.isna(tipo_valor): tipo_valor = 'Acervo'
+                tipo_valor = row.get('Tipo') or 'Acervo'
                 try:
                     qtd = int(float(row.get('Qtd_Estoque', 1) or 1))
                 except:
                     qtd = 1
 
                 payload = {
+                    "tenant_id": tenant,
                     "nome": row['Item'], "categoria": "Geral", "tipo": tipo_valor,
                     "preco_aluguel": row.get('Preco', 0), "quantidade_total": qtd,
                     "custo_aquisicao": row.get('Custo_Unitario', 0), "link_reposicao": row.get('Link_Referencia', ''),
@@ -412,7 +421,8 @@ class SupabaseService:
                 if row.get('id') and pd.notna(row.get('id')):
                     supabase.table("acervo").update(payload).eq("id", int(row['id'])).execute()
                 else:
-                    res = supabase.table("acervo").select("id").eq("nome", row['Item']).execute()
+                    res = supabase.table("acervo").select("id").eq("tenant_id", tenant).eq("nome",
+                                                                                           row['Item']).execute()
                     if res.data:
                         supabase.table("acervo").update(payload).eq("id", res.data[0]['id']).execute()
                     else:
@@ -422,14 +432,15 @@ class SupabaseService:
             for row in records:
                 kit_nome = row['Nome']
                 kit_desc = row['Descricao']
-                payload = {"nome": kit_nome, "preco_sugerido": row['Preco'], "descricao_comercial": kit_desc}
+                payload = {"tenant_id": tenant, "nome": kit_nome, "preco_sugerido": row['Preco'],
+                           "descricao_comercial": kit_desc}
 
                 kit_id = None
                 if 'id' in row and pd.notna(row['id']):
                     kit_id = int(row['id'])
                     supabase.table("kits").update(payload).eq("id", kit_id).execute()
                 else:
-                    res = supabase.table("kits").select("id").eq("nome", kit_nome).execute()
+                    res = supabase.table("kits").select("id").eq("tenant_id", tenant).eq("nome", kit_nome).execute()
                     if res.data:
                         kit_id = res.data[0]['id']
                         supabase.table("kits").update(payload).eq("id", kit_id).execute()
@@ -441,13 +452,11 @@ class SupabaseService:
                     supabase.table("kit_itens").delete().eq("kit_id", kit_id).execute()
                     itens_para_inserir = []
                     partes = str(kit_desc).split(';')
-
                     for p in partes:
                         p = p.strip()
                         if not p: continue
                         qtd = 1
                         nome_item = p
-
                         if "x " in p:
                             try:
                                 q_str, n_str = p.split("x ", 1)
@@ -457,15 +466,16 @@ class SupabaseService:
                             except:
                                 pass
 
-                        res_item = supabase.table("acervo").select("id").eq("nome", nome_item).execute()
+                        res_item = supabase.table("acervo").select("id").eq("tenant_id", tenant).eq("nome",
+                                                                                                    nome_item).execute()
                         if res_item.data:
                             item_id = res_item.data[0]['id']
                             itens_para_inserir.append({
+                                "tenant_id": tenant,
                                 "kit_id": kit_id,
                                 "item_acervo_id": item_id,
                                 "quantidade": qtd
                             })
-
                     if itens_para_inserir:
                         supabase.table("kit_itens").insert(itens_para_inserir).execute()
 
@@ -473,14 +483,14 @@ class SupabaseService:
             for row in records:
                 tema_nome = row['Tema']
                 tema_desc = row['Detalhes']
-                payload = {"nome": tema_nome, "categoria": row['Categoria'], "detalhes": tema_desc}
+                payload = {"tenant_id": tenant, "nome": tema_nome, "categoria": row['Categoria'], "detalhes": tema_desc}
 
                 tema_id = None
                 if 'id' in row and pd.notna(row['id']):
                     tema_id = int(row['id'])
                     supabase.table("temas").update(payload).eq("id", tema_id).execute()
                 else:
-                    res = supabase.table("temas").select("id").eq("nome", tema_nome).execute()
+                    res = supabase.table("temas").select("id").eq("tenant_id", tenant).eq("nome", tema_nome).execute()
                     if res.data:
                         tema_id = res.data[0]['id']
                         supabase.table("temas").update(payload).eq("id", tema_id).execute()
@@ -495,9 +505,11 @@ class SupabaseService:
                         supabase.table("tema_itens").delete().eq("tema_id", tema_id).execute()
                         inserts = []
                         for nm in nomes:
-                            res_it = supabase.table("acervo").select("id").eq("nome", nm).execute()
+                            res_it = supabase.table("acervo").select("id").eq("tenant_id", tenant).eq("nome",
+                                                                                                      nm).execute()
                             if res_it.data:
                                 inserts.append({
+                                    "tenant_id": tenant,
                                     "tema_id": tema_id,
                                     "item_acervo_id": res_it.data[0]['id']
                                 })
@@ -509,12 +521,16 @@ class SupabaseService:
     @staticmethod
     def registrar_transacao(transacao: Dict, update_estoque: Dict = None):
         supabase = SupabaseService.get_client()
+        tenant = st.session_state.get('tenant_id')
+        if not tenant: return
+
         try:
             d_venc = str(transacao['data'])
         except:
             d_venc = str(date.today())
 
         payload = {
+            "tenant_id": tenant,
             "descricao": transacao['descricao'], "tipo": transacao['tipo'],
             "categoria": transacao['categoria'], "valor": transacao['valor'],
             "data_vencimento": d_venc,
@@ -526,11 +542,13 @@ class SupabaseService:
 
         if update_estoque:
             item_payload = {
+                "tenant_id": tenant,
                 "nome": update_estoque['item'], "quantidade_total": update_estoque['qtd'],
                 "custo_aquisicao": update_estoque['custo'], "link_reposicao": update_estoque['link'],
                 "categoria": "Novo", "tipo": "Acervo", "ativo": True
             }
-            res = supabase.table("acervo").select("*").eq("nome", update_estoque['item']).execute()
+            res = supabase.table("acervo").select("*").eq("tenant_id", tenant).eq("nome",
+                                                                                  update_estoque['item']).execute()
             if res.data:
                 nova_qtd = res.data[0]['quantidade_total'] + update_estoque['qtd']
                 supabase.table("acervo").update({"quantidade_total": nova_qtd}).eq("id", res.data[0]['id']).execute()
@@ -539,7 +557,53 @@ class SupabaseService:
 
 
 # ==========================================
-# SERVIÇOS AUXILIARES
+# SERVIÇOS AUXILIARES (AUTH)
+# ==========================================
+class AuthService:
+    @staticmethod
+    def login(email, senha):
+        supabase = SupabaseService.get_client()
+        try:
+            # 1. Login Auth padrão
+            response = supabase.auth.sign_in_with_password({"email": email, "password": senha})
+
+            if response.user:
+                # 2. Busca qual é a empresa (tenant) desse usuário
+                res_profile = supabase.table("profiles").select("tenant_id, role, nome").eq("id",
+                                                                                            response.user.id).execute()
+
+                tenant_id = None
+                role = 'vendedor'
+
+                if res_profile.data:
+                    tenant_id = res_profile.data[0]['tenant_id']
+                    role = res_profile.data[0]['role']
+
+                # Salva na sessão
+                st.session_state['tenant_id'] = tenant_id
+
+                return True, {
+                    "user_auth": response.user,
+                    "tenant_id": tenant_id,
+                    "role": role,
+                    "email": email
+                }
+            return False, "Credenciais inválidas."
+        except Exception as e:
+            return False, str(e)
+
+    @staticmethod
+    def logout():
+        supabase = SupabaseService.get_client()
+        try:
+            supabase.auth.sign_out()
+            return True
+        except:
+            return False
+
+
+# ==========================================
+# SERVIÇOS AUXILIARES (INVENTORY & PDF)
 # ==========================================
 class InventoryService:
     @staticmethod
@@ -550,24 +614,19 @@ class InventoryService:
             d_evt = orc.get('data_evento')
             if not d_evt: continue
 
-            # CORREÇÃO: Lê os itens reais carregados do banco (campo auxiliar)
             itens = orc.get('itens_reais_db', [])
-
-            # Fallback para o modo antigo (JSON)
             if not itens:
                 dados = orc.get('dados_form', {})
                 itens = dados.get('in_itens_pers', []) + dados.get('in_itens_add', [])
 
             if str(d_evt) not in mapa: mapa[str(d_evt)] = {}
-
             for i in itens:
                 mapa[str(d_evt)][i] = mapa[str(d_evt)].get(i, 0) + 1
-
         return mapa
 
     @staticmethod
     def verificar_disponibilidade_rapida(item_nome: str, data_evento: str, estoque_total: int, mapa_ocupacao: Dict) -> \
-            Tuple[int, int]:
+    Tuple[int, int]:
         uso = mapa_ocupacao.get(str(data_evento), {}).get(item_nome, 0)
         return uso, estoque_total - uso
 
@@ -675,34 +734,3 @@ class EmailService:
             return False, f"Erro HTTP {response.status_code}"
         except Exception as e:
             return False, f"Erro Técnico: {e}"
-
-class AuthService:
-    @staticmethod
-    def login(email, senha):
-        supabase = SupabaseService.get_client()
-        try:
-            # Tenta logar usando o Auth do Supabase
-            response = supabase.auth.sign_in_with_password({"email": email, "password": senha})
-            if response.user:
-                return True, response.user
-            return False, "Credenciais inválidas."
-        except Exception as e:
-            return False, str(e)
-
-    @staticmethod
-    def logout():
-        supabase = SupabaseService.get_client()
-        try:
-            supabase.auth.sign_out()
-            return True
-        except:
-            return False
-
-    @staticmethod
-    def get_current_user():
-        # Verifica se existe sessão ativa
-        supabase = SupabaseService.get_client()
-        session = supabase.auth.get_session()
-        if session:
-            return session.user
-        return None
