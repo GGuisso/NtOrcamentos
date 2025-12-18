@@ -10,3 +10,7 @@ venv/
 
 # Segredos do Streamlit (MUITO IMPORTANTE)
 .streamlit/secrets.toml
+
+.idea/
+.idea/workspace.xml
+
