@@ -5,11 +5,17 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="172730df-b753-4731-a10b-026a918c3925" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/views/logistica.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/views/publico.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/views/usuarios.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/services.py" beforeDir="false" afterPath="$PROJECT_DIR$/services.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/componentes.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/componentes.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/views/calendario.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/calendario.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/views/financeiro.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/financeiro.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/views/gestao.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/gestao.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/views/historico.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/historico.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/views/orcamento.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/orcamento.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -40,6 +46,7 @@
     &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252&quot;: &quot;true&quot;,
     &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.typescript.service.memoryLimit.init&quot;: &quot;true&quot;,
     &quot;git-widget-placeholder&quot;: &quot;dev&quot;,
     &quot;ignore.virus.scanning.warn.message&quot;: &quot;true&quot;,
     &quot;last_opened_file_path&quot;: &quot;C:/Users/gui_o/PycharmProjects/NtOrcamentos&quot;,
@@ -54,8 +61,8 @@
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-js-predefined-d6986cc7102b-a71380e98a7c-JavaScript-PY-252.28238.29" />
-        <option value="bundled-python-sdk-a101402ee41c-968fe969f28a-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-252.28238.29" />
+        <option value="bundled-js-predefined-d6986cc7102b-c7e53b3be11b-JavaScript-PY-253.28294.336" />
+        <option value="bundled-python-sdk-0978a7220b69-9867c7d4c0a4-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-253.28294.336" />
       </set>
     </attachedChunks>
   </component>
@@ -73,6 +80,9 @@
       <workItem from="1765452904694" duration="471000" />
       <workItem from="1765453617563" duration="112000" />
       <workItem from="1765454198119" duration="15948000" />
+      <workItem from="1765885906007" duration="21851000" />
+      <workItem from="1766078385549" duration="219000" />
+      <workItem from="1766078621708" duration="761000" />
     </task>
     <servers />
   </component>

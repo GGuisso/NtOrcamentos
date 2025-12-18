@@ -1,10 +1,60 @@
 import streamlit as st
 import datetime
 import time
+import urllib.parse
 from datetime import date
-from functools import partial
 from services import SupabaseService
 from views.componentes import reset_form_state
+
+
+# --- MAPA DE STATUS GLOBAL ---
+def get_status_config(status):
+    mapa = {
+        "Aguardando Aprovação": {"icon": "🟡", "cor": "orange"},
+        "Aguardando Pagamento": {"icon": "💸", "cor": "red"},  # Destaque vermelho/financeiro
+        "Reserva Confirmada": {"icon": "🔵", "cor": "blue"},
+        "Itens Retirados": {"icon": "🚚", "cor": "violet"},
+        "Finalizado": {"icon": "✅", "cor": "green"},
+        "Cancelado": {"icon": "🔴", "cor": "grey"},
+        "Reprovado": {"icon": "🚫", "cor": "grey"}
+    }
+    return mapa.get(status, {"icon": "⚪", "cor": "grey"})
+
+
+# --- DIALOG PARA EXIBIR O LINK ---
+@st.dialog("🔗 Link de Aprovação do Cliente")
+def dialog_compartilhar_link(orcamento):
+    uuid_str = orcamento.get('link_uuid')
+
+    if not uuid_str:
+        st.warning("Este orçamento antigo não possui link gerado. Por favor, edite e salve-o novamente para gerar.")
+        return
+
+    base_url = st.secrets.get("BASE_URL", "")
+    if not base_url and "general" in st.secrets:
+        base_url = st.secrets["general"].get("BASE_URL", "http://localhost:8501")
+    if not base_url: base_url = "http://localhost:8501"
+
+    link_final = f"{base_url}/?proposta_id={uuid_str}"
+
+    st.write(f"Envie este link para **{orcamento['cliente']}**:")
+    st.code(link_final, language="text")
+
+    primeiro_nome = orcamento['cliente'].split()[0]
+    msg_zap = f"Olá {primeiro_nome}! 🎈\nSegue o link do seu orçamento para aprovação e pagamento do sinal:\n\n{link_final}"
+
+    dados_form = orcamento.get('dados_form', {})
+    telefone = dados_form.get('in_telefone', '')
+    nums = "".join([c for c in telefone if c.isdigit()])
+
+    if nums:
+        link_zap_btn = f"https://api.whatsapp.com/send?phone=55{nums}&text={urllib.parse.quote(msg_zap)}"
+        st.link_button("🚀 Enviar no WhatsApp", link_zap_btn, type="primary", use_container_width=True)
+    else:
+        st.info("Cadastre o telefone do cliente para habilitar o botão de envio direto.")
+
+    st.markdown("---")
+    st.caption("Ao acessar este link, o cliente verá as fotos, totais e poderá pagar o sinal via Pix.")
 
 
 @st.dialog("Gerenciar Status")
@@ -12,9 +62,9 @@ def dialog_gerenciar_status(orcamento):
     st.write(f"Gerenciar Pedido: **{orcamento['cliente']}**")
     st.caption(f"Status Atual: {orcamento['status']}")
 
-    # Lista Oficial de Status (Fluxo Limpo)
     lista_status = [
         "Aguardando Aprovação",
+        "Aguardando Pagamento",
         "Reserva Confirmada",
         "Itens Retirados",
         "Finalizado",
@@ -68,7 +118,6 @@ def dialog_gerenciar_status(orcamento):
 
     elif novo_status == "Finalizado":
         st.success("✅ O pedido será arquivado como concluído.")
-        st.write("Verifique se houve quebras ou avarias antes de finalizar.")
         if st.button("Finalizar Pedido"):
             financeiro_payload = "SKIP"
 
@@ -100,46 +149,50 @@ def dialog_gerenciar_status(orcamento):
         with st.spinner("Atualizando Status..."):
             orcamento['status'] = novo_status
             SupabaseService.upsert_orcamento(orcamento)
-
-            st.session_state['db_orcamentos'] = [
-                orcamento if o['id'] == orcamento['id'] else o
-                for o in st.session_state['db_orcamentos']
-            ]
+            st.session_state['db_orcamentos'] = SupabaseService.carregar_orcamentos()
             st.rerun()
 
 
-# --- FUNÇÃO DE CARREGAMENTO CORRIGIDA ---
 def carregar_orcamento_para_edicao(oid, dados):
     st.session_state['edit_id'] = oid
-
+    # Limpa e carrega dados
+    reset_form_state()
     for k, v in dados.items():
-        # 1. Converte Data do Evento (se for string)
         if k == 'in_data':
             if isinstance(v, str):
                 try:
-                    v = datetime.datetime.strptime(v, '%Y-%m-%d').date()
+                    v = datetime.datetime.strptime(v[:10], '%Y-%m-%d').date()
                 except:
                     pass
-
-        # 2. Converte Data de Nascimento (AQUI ESTAVA O ERRO)
-        # O banco manda string "1992-03-26", o date_input precisa de object date
         if k == 'in_nascimento' and v is not None:
             if isinstance(v, str):
                 try:
-                    v = datetime.datetime.strptime(v, '%Y-%m-%d').date()
+                    v = datetime.datetime.strptime(v[:10], '%Y-%m-%d').date()
                 except:
                     v = None
 
-        st.session_state[k] = v
+        # Recupera horários
+        if k in ['in_hora_ret_i', 'in_hora_ret_f', 'in_hora_dev_i', 'in_hora_dev_f']:
+            if isinstance(v, str):
+                try:
+                    v = datetime.datetime.strptime(v, '%H:%M:%S').time()
+                except:
+                    pass
 
-    # Define a navegação para a tela de formulário
-    # O st.rerun() foi removido daqui para evitar o aviso "no-op" dentro do callback.
-    # O main.py detectará a mudança em 'navegacao_atual' e renderizará a tela correta.
+        st.session_state[k] = v
     st.session_state['navegacao_atual'] = "📝 Novo Orçamento"
 
 
 def render_historico():
     st.header("📂 Histórico de Pedidos")
+
+    # --- BOTÃO DE REFRESH ---
+    c_top1, c_top2 = st.columns([4, 1])
+    if c_top2.button("🔄 Atualizar Lista", use_container_width=True):
+        st.session_state['db_orcamentos'] = SupabaseService.carregar_orcamentos()
+        st.rerun()
+    # -------------------------------
+
     db = st.session_state.get('db_orcamentos', [])
 
     if not db:
@@ -149,8 +202,8 @@ def render_historico():
     c_f1, c_f2 = st.columns(2)
     busca = c_f1.text_input("🔍 Buscar Cliente ou ID")
 
-    opcoes_filtro = ["Aguardando Aprovação", "Reserva Confirmada", "Itens Retirados", "Finalizado", "Cancelado",
-                     "Reprovado"]
+    opcoes_filtro = ["Aguardando Aprovação", "Aguardando Pagamento", "Reserva Confirmada", "Itens Retirados",
+                     "Finalizado", "Cancelado", "Reprovado"]
     filtro_st = c_f2.multiselect("Filtrar por Status", opcoes_filtro)
 
     lista = sorted(db, key=lambda x: str(x['id']), reverse=True)
@@ -160,18 +213,9 @@ def render_historico():
         lista = [x for x in lista if x.get('status') in filtro_st]
 
     for orc in lista:
-        with st.container():
+        with st.container(border=True):
             status = orc.get('status', 'Aguardando Aprovação')
-
-            mapa_cores = {
-                "Aguardando Aprovação": "🟡",
-                "Reserva Confirmada": "🔵",
-                "Itens Retirados": "🟣",
-                "Finalizado": "🟢",
-                "Cancelado": "🔴",
-                "Reprovado": "⚫"
-            }
-            cor = mapa_cores.get(status, "⚪")
+            config = get_status_config(status)
 
             c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
 
@@ -179,12 +223,13 @@ def render_historico():
             c1.caption(f"📅 {orc['data_evento']} | 🎨 {orc.get('tema', '-')}")
 
             c2.write(f"R$ {orc.get('total', 0):.2f}")
-            c3.markdown(f"{cor} **{status}**")
+
+            # Badge de Status colorido
+            c3.markdown(f":{config['cor']}[{config['icon']} **{status}**]")
 
             bts = c4.columns([1, 1, 1])
 
-            pode_editar = (status == "Aguardando Aprovação")
-
+            pode_editar = (status in ["Aguardando Aprovação", "Aguardando Pagamento", "Rascunho"])
             bts[0].button(
                 "✏️" if pode_editar else "👁️",
                 key=f"e_{orc['id']}",
@@ -193,7 +238,8 @@ def render_historico():
                 help="Ver detalhes ou Editar"
             )
 
-            if bts[1].button("🔄", key=f"st_{orc['id']}", help="Mudar Status"):
-                dialog_gerenciar_status(orc)
+            if bts[1].button("🔗", key=f"lk_{orc['id']}", help="Link do Cliente"):
+                dialog_compartilhar_link(orc)
 
-            st.markdown("---")
+            if bts[2].button("🔄", key=f"st_{orc['id']}", help="Mudar Status"):
+                dialog_gerenciar_status(orc)

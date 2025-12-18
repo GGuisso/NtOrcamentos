@@ -1,4 +1,3 @@
-# ARQUIVO: views/gestao.py
 import streamlit as st
 import pandas as pd
 import time
@@ -8,8 +7,10 @@ from services import SupabaseService
 def render_gestao():
     st.header("📦 Gestão de Acervo e Catálogo Inteligente")
 
-    # Carrega dados atuais
-    acervo, categorias, kits, detalhes, estoque_dict = SupabaseService.carregar_catalogo()
+    # --- CORREÇÃO DO ERRO: Passando tenant_id para o serviço ---
+    tenant_id = st.session_state.get('tenant_id')
+    acervo, categorias, kits, detalhes, estoque_dict = SupabaseService.carregar_catalogo(tenant_id)
+    # -----------------------------------------------------------
 
     tab_itens, tab_kits_builder, tab_temas_builder = st.tabs(
         ["🧩 Acervo (Itens)", "🎁 Construtor de Kits", "🎨 Construtor de Temas"])
@@ -33,14 +34,12 @@ def render_gestao():
         if "Tipo" not in df_itens.columns: df_itens["Tipo"] = "Acervo"
         if "id" not in df_itens.columns: df_itens["id"] = None
 
-        # --- LIMPEZA VISUAL (ACERVO) ---
         cols_audit = ["created_at", "updated_at"]
         df_itens = df_itens.drop(columns=[c for c in cols_audit if c in df_itens.columns], errors='ignore')
 
         colunas_prioridade = ["id", "Imagem", "Item", "Tipo", "Preco", "Qtd_Estoque"]
         colunas_restantes = [c for c in df_itens.columns if c not in colunas_prioridade]
         df_itens = df_itens[colunas_prioridade + colunas_restantes]
-        # -------------------------------
 
         with st.expander("📸 Enviar Nova Foto e Vincular Automaticamente"):
             if not df_itens.empty:
@@ -50,7 +49,6 @@ def render_gestao():
                 lista_opcoes.sort()
 
                 item_selecionado = c_up1.selectbox("Selecione o item do acervo:", options=lista_opcoes)
-
                 nome_arquivo_sugerido = item_selecionado.strip() if item_selecionado else ""
                 nome_item_img = c_up2.text_input("Nome base do arquivo:", value=nome_arquivo_sugerido)
 
@@ -68,7 +66,6 @@ def render_gestao():
                             if link_gerado:
                                 idx = df_itens.index[df_itens['Item'] == item_selecionado].tolist()
                                 if idx:
-                                    # Envia APENAS o item modificado para o backend
                                     df_temp = df_itens.iloc[[idx[0]]].copy()
                                     df_temp.at[idx[0], 'Imagem'] = link_gerado
                                     SupabaseService.salvar_dataframe("Itens", df_temp)
@@ -101,6 +98,7 @@ def render_gestao():
 
         st.info("💡 Edite os valores diretamente na tabela abaixo.")
 
+        # AJUSTE DE WARNING: use_container_width -> width="stretch"
         df_editado = st.data_editor(
             df_itens,
             column_config=col_config,
@@ -135,8 +133,8 @@ def render_gestao():
 
         with st.expander("📋 Visualizar Kits Existentes"):
             if not df_kits_raw.empty:
-                # --- LIMPEZA VISUAL (KITS) ---
                 df_kits_show = df_kits_raw.drop(columns=["created_at", "updated_at"], errors='ignore')
+                # AJUSTE DE WARNING: use_container_width -> width="stretch"
                 st.dataframe(df_kits_show, width="stretch", hide_index=True)
             else:
                 st.info("Nenhum kit cadastrado.")
@@ -157,7 +155,6 @@ def render_gestao():
 
             kit_nome = dados_kit['Nome']
             kit_preco = float(dados_kit['Preco'])
-            # Pega o ID para atualização
             if 'id' in dados_kit: kit_id_atual = int(dados_kit['id'])
 
             desc = str(dados_kit['Descricao'])
@@ -187,6 +184,8 @@ def render_gestao():
             })
 
         df_builder = pd.DataFrame(lista_itens_builder)
+
+        # AJUSTE DE WARNING: use_container_width -> width="stretch"
         df_kit_config = st.data_editor(
             df_builder,
             column_config={
@@ -212,18 +211,14 @@ def render_gestao():
                     with st.spinner("Salvando kit..."):
                         desc_list = [f"{row['Qtd_No_Kit']}x {row['Item']}" for _, row in itens_selecionados.iterrows()]
 
-                        # --- CORREÇÃO: Cria DF de UMA linha apenas ---
                         novo_dict = {
                             "Nome": kit_nome,
                             "Preco": kit_preco,
                             "Descricao": "; ".join(desc_list)
                         }
-                        # Se temos ID, passamos para update
                         if kit_id_atual: novo_dict['id'] = kit_id_atual
 
                         df_unico = pd.DataFrame([novo_dict])
-
-                        # Salva somente este kit
                         SupabaseService.salvar_dataframe("Kits", df_unico)
 
                         del st.session_state["df_kits_cache"]
@@ -247,6 +242,7 @@ def render_gestao():
         with st.expander("Lista de Temas"):
             if not df_temas.empty:
                 df_temas_show = df_temas.drop(columns=["created_at", "updated_at"], errors='ignore')
+                # AJUSTE DE WARNING: use_container_width -> width="stretch"
                 st.dataframe(df_temas_show, width="stretch", hide_index=True)
 
         c1, c2 = st.columns(2)
@@ -262,7 +258,6 @@ def render_gestao():
                 with st.spinner("Salvando tema..."):
                     desc = f"{detalhes} | Base: {', '.join(itens)}" if itens else detalhes
 
-                    # --- CORREÇÃO: Salva apenas o novo tema ---
                     df_unico = pd.DataFrame([{"Categoria": cat, "Tema": nome, "Detalhes": desc}])
                     SupabaseService.salvar_dataframe("Temas", df_unico)
 

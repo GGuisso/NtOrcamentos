@@ -11,46 +11,83 @@ from views.componentes import reset_form_state
 
 def render_area_contrato(dados_cli, dados_evt, itens, total, sinal, restante):
     st.header("📝 Contrato e Documentação")
-    with st.expander("Gerenciar Contrato (Baixar ou Enviar)"):
-        st.info("Janela de horários:")
-        c1, c2, c3 = st.columns([2, 1, 1])
 
+    # --- ÁREA DO LINK PÚBLICO ---
+    orc_id = st.session_state.get('edit_id')
+
+    if orc_id:
+        orc_atual = next((x for x in st.session_state.get('db_orcamentos', []) if x['id'] == orc_id), None)
+
+        if orc_atual:
+            uuid_str = orc_atual.get('link_uuid')
+            status_atual = orc_atual.get('status')
+
+            if uuid_str:
+                with st.container(border=True):
+                    st.subheader("🔗 Link de Aprovação Online (Novo)")
+                    st.caption("Envie este link para o cliente ver as fotos, aprovar os termos e pagar o Pix.")
+
+                    base_url = st.secrets.get("BASE_URL", "http://localhost:8501")
+                    link_final = f"{base_url}/?proposta_id={uuid_str}"
+
+                    st.code(link_final, language="text")
+
+                    primeiro_nome = dados_cli['nome'].split()[0] if dados_cli['nome'] else "Cliente"
+                    msg_zap = f"Olá {primeiro_nome}! 🎈\nSegue o link do seu orçamento para aprovação e pagamento do sinal:\n\n{link_final}"
+
+                    celular = st.session_state.get('in_telefone', '')
+                    if celular:
+                        nums = "".join([c for c in celular if c.isdigit()])
+                        link_zap_btn = f"https://api.whatsapp.com/send?phone=55{nums}&text={urllib.parse.quote(msg_zap)}"
+                        st.link_button("🚀 Enviar Link no WhatsApp", link_zap_btn, type="primary",
+                                       use_container_width=True)
+                    else:
+                        st.warning("Preencha o WhatsApp do cliente para habilitar o envio.")
+
+                    if status_atual == "Aguardando Pagamento":
+                        st.info("🕒 O cliente já aprovou os termos! Aguardando Pix.")
+                    elif status_atual == "Reserva Confirmada":
+                        st.success("✅ Tudo certo! Reserva confirmada.")
+            else:
+                st.info("Salve o orçamento novamente para gerar o Link Público.")
+
+    st.markdown("---")
+
+    # --- PDF LEGACY ---
+    with st.expander("📄 Gerar PDF Clássico (Legacy)"):
+        # Garante que a data seja um objeto date para formatação
         try:
-            data_base = datetime.datetime.strptime(dados_evt['data'], '%Y-%m-%d').date()
+            raw_date = dados_evt['data']
+            if isinstance(raw_date, str):
+                d_evt_obj = datetime.datetime.strptime(raw_date[:10], '%Y-%m-%d').date()
+            else:
+                d_evt_obj = raw_date
         except:
-            data_base = date.today()
+            d_evt_obj = date.today()
 
-        d_ret = c1.date_input("Retirada", value=data_base)
-        h_ret_i = c2.time_input("Das", value=datetime.time(10, 0))
-        h_ret_f = c3.time_input("Até", value=datetime.time(11, 0))
+        txt_ret = st.session_state.get('txt_retirada_final', f"{d_evt_obj.strftime('%d/%m/%Y')} (Horário a combinar)")
+        txt_dev = st.session_state.get('txt_devolucao_final', f"Dia seguinte (Horário a combinar)")
 
-        c4, c5, c6 = st.columns([2, 1, 1])
-        d_dev = c4.date_input("Devolução", value=data_base + datetime.timedelta(days=1))
-        h_dev_i = c5.time_input("Das ", value=datetime.time(8, 0))
-        h_dev_f = c6.time_input("Até ", value=datetime.time(10, 0))
+        st.write(f"**Retirada:** {txt_ret}")
+        st.write(f"**Devolução:** {txt_dev}")
 
-        txt_ret = f"{d_ret.strftime('%d/%m/%Y')} entre {h_ret_i.strftime('%H:%M')} e {h_ret_f.strftime('%H:%M')}"
-        txt_dev = f"{d_dev.strftime('%d/%m/%Y')} entre {h_dev_i.strftime('%H:%M')} e {h_dev_f.strftime('%H:%M')}"
-
-        st.markdown("---")
         b_down, b_send = st.columns(2)
         with b_down:
-            if st.button("📄 Gerar PDF Local"):
+            if st.button("💾 Baixar PDF Local"):
                 if not dados_cli['nome']:
                     st.error("Nome obrigatório")
                 else:
                     f_path = PDFGenerator.gerar(dados_cli, dados_evt, itens, total, sinal, restante, txt_ret, txt_dev)
                     with open(f_path, "rb") as f:
-                        st.download_button("💾 Baixar PDF", f, file_name=f_path)
+                        st.download_button("📥 Download", f, file_name=f"Contrato_{dados_cli['nome']}.pdf")
                     os.remove(f_path)
         with b_send:
-            # Puxa e-mail diretamente do estado (preenchido no topo)
             email_cadastro = st.session_state.get('in_email', '')
             st.text_input("E-mail do Cliente (Do Cadastro):", value=email_cadastro, disabled=True)
 
             if st.button("📧 Enviar via Autentique"):
                 if not email_cadastro or not dados_cli['nome']:
-                    st.error("Preencha o e-mail no formulário do cliente (topo da página).")
+                    st.error("Preencha o e-mail no formulário.")
                 else:
                     with st.spinner("Enviando..."):
                         f_path = PDFGenerator.gerar(dados_cli, dados_evt, itens, total, sinal, restante, txt_ret,
@@ -70,7 +107,6 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
     bloqueado = False
     status_atual = "Novo"
 
-    # --- LÓGICA DE EDIÇÃO E BLOQUEIO ---
     if st.session_state['edit_id']:
         orc_atual = next(
             (x for x in st.session_state.get('db_orcamentos', []) if str(x['id']) == str(st.session_state['edit_id'])),
@@ -78,12 +114,11 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
 
         if orc_atual:
             status_atual = orc_atual['status']
-            STATUS_EDITAVEIS = ["Novo", "Aguardando Aprovação", "Rascunho"]
+            STATUS_EDITAVEIS = ["Novo", "Aguardando Aprovação", "Rascunho", "Aguardando Pagamento"]
 
             if status_atual not in STATUS_EDITAVEIS:
                 bloqueado = True
-                st.warning(
-                    f"🔒 Este orçamento está **{status_atual.upper()}** e não pode ser editado. (Apenas 'Aguardando Aprovação' ou 'Rascunho' permitem alterações)")
+                st.warning(f"🔒 Este orçamento está **{status_atual.upper()}**.")
             else:
                 st.info(f"✏️ Editando orçamento #{st.session_state['edit_id']} (Status: {status_atual})")
 
@@ -100,16 +135,72 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
         c2.button("📑 Usar como base (Duplicar)", on_click=_duplicar, use_container_width=True)
         st.markdown("---")
 
-    # --- FUNÇÕES AUXILIARES ---
+    # --- HELPERS DE DATA/HORA BLINDADOS (CORREÇÃO DO ERRO) ---
+    def safe_date(key, default):
+        """
+        Garante que o valor na sessão seja um objeto Date.
+        Se for String (vindo do banco), converte e ATUALIZA a sessão para evitar erro do Streamlit.
+        """
+        val = st.session_state.get(key)
+
+        # Se não existe ou é nulo, usa o default
+        if not val:
+            return default
+
+        # Se já é objeto Date ou Datetime
+        if isinstance(val, (datetime.date, datetime.datetime)):
+            if isinstance(val, datetime.datetime):
+                d = val.date()
+                if key in st.session_state: st.session_state[key] = d  # Corrige datetime -> date
+                return d
+            return val
+
+        # Se for string, converte e salva na sessão
+        if isinstance(val, str):
+            try:
+                # Pega apenas os 10 primeiros chars (YYYY-MM-DD) ignorando hora se houver
+                d = datetime.datetime.strptime(val[:10], '%Y-%m-%d').date()
+                st.session_state[key] = d  # <--- ISSO CORRIGE O ERRO DE TYPEERROR
+                return d
+            except:
+                return default
+        return default
+
+    def safe_time(key, default):
+        """Mesma lógica blindada para Time"""
+        val = st.session_state.get(key)
+        if not val: return default
+
+        if isinstance(val, (datetime.time, datetime.datetime)):
+            if isinstance(val, datetime.datetime):
+                t = val.time()
+                if key in st.session_state: st.session_state[key] = t
+                return t
+            return val
+
+        if isinstance(val, str):
+            try:
+                # Tenta HH:MM:SS
+                t = datetime.datetime.strptime(val, '%H:%M:%S').time()
+                st.session_state[key] = t
+                return t
+            except:
+                try:
+                    # Tenta HH:MM
+                    t = datetime.datetime.strptime(val, '%H:%M').time()
+                    st.session_state[key] = t
+                    return t
+                except:
+                    return default
+        return default
+
     def _buscar_cep_cli():
         res = CepService.consultar(st.session_state.get("in_cli_cep", ""))
         if res:
             st.session_state["in_cli_rua"] = res.get("logradouro", "")
             st.session_state["in_cli_bairro"] = res.get("bairro", "")
             st.session_state["in_cli_cidade"] = res.get("localidade", "")
-            st.toast("Endereço do cliente encontrado!", icon="📍")
-        elif st.session_state.get("in_cli_cep"):
-            st.toast("CEP inválido.", icon="⚠️")
+            st.toast("Endereço encontrado!", icon="📍")
 
     def _buscar_cep_evt():
         res = CepService.consultar(st.session_state.get("in_evt_cep", ""))
@@ -117,9 +208,7 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
             st.session_state["in_evt_rua"] = res.get("logradouro", "")
             st.session_state["in_evt_bairro"] = res.get("bairro", "")
             st.session_state["in_evt_cidade"] = res.get("localidade", "")
-            st.toast("Endereço do evento encontrado!", icon="📍")
-        elif st.session_state.get("in_evt_cep"):
-            st.toast("CEP inválido.", icon="⚠️")
+            st.toast("Endereço encontrado!", icon="📍")
 
     def _copiar_endereco():
         if st.session_state.get("chk_mesmo_end"):
@@ -129,17 +218,12 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
             st.session_state["in_evt_bairro"] = st.session_state.get("in_cli_bairro", "")
             st.session_state["in_evt_cidade"] = st.session_state.get("in_cli_cidade", "")
 
-    # --- CALLBACK DE AUTOPREENCHIMENTO ---
     def _autocompletar_cliente():
         cpf_input = st.session_state.get('in_cpf', '').strip()
         nome_input = st.session_state.get('in_nome', '').strip()
-
         clientes_encontrados = []
-
-        # Prioridade: CPF (Busca Exata)
         if cpf_input:
             clientes_encontrados = SupabaseService.buscar_clientes(cpf_input, por_cpf=True)
-        # Se não tiver CPF, busca por Nome
         elif nome_input:
             clientes_encontrados = SupabaseService.buscar_clientes(nome_input, por_cpf=False)
 
@@ -149,43 +233,30 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
             st.session_state['in_cpf'] = c.get('cpf', '')
             st.session_state['in_telefone'] = c.get('telefone', '')
             st.session_state['in_email'] = c.get('email', '')
-
-            # Tratamento da data de nascimento
             nasc_db = c.get('data_nascimento')
             if nasc_db:
                 try:
                     st.session_state['in_nascimento'] = datetime.datetime.strptime(nasc_db, '%Y-%m-%d').date()
                 except:
                     st.session_state['in_nascimento'] = None
-
-            # Endereço
             st.session_state['in_cli_cep'] = c.get('cep', '')
             st.session_state['in_cli_rua'] = c.get('logradouro', '')
             st.session_state['in_cli_num'] = c.get('numero', '')
             st.session_state['in_cli_bairro'] = c.get('bairro', '')
             st.session_state['in_cli_cidade'] = c.get('cidade', '')
-
             st.toast(f"Cliente {c['nome']} carregado!", icon="✅")
 
-        elif len(clientes_encontrados) > 1:
-            st.toast(f"Encontrei {len(clientes_encontrados)} clientes parecidos. Digite o CPF.", icon="⚠️")
-
-    # --- FORMULÁRIO ---
     st.subheader("👤 Dados do Cliente")
     col_c1, col_c2, col_c3 = st.columns([2, 1, 1])
-    # Adicionado on_change para Autopreenchimento
     nome = col_c1.text_input("Nome Completo", key="in_nome", disabled=bloqueado, on_change=_autocompletar_cliente)
     cpf = col_c2.text_input("CPF", key="in_cpf", disabled=bloqueado, on_change=_autocompletar_cliente)
     celular = col_c3.text_input("WhatsApp", key="in_telefone", disabled=bloqueado)
 
-    # NOVOS CAMPOS: EMAIL E NASCIMENTO
     col_c4, col_c5 = st.columns([2, 1])
     col_c4.text_input("E-mail", key="in_email", placeholder="exemplo@email.com", disabled=bloqueado)
-
-    # Correção da data 1900
-    col_c5.date_input("Data Nascimento", value=None, min_value=date(1900, 1, 1), max_value=date.today(),
-                      key="in_nascimento", format="DD/MM/YYYY", disabled=bloqueado,
-                      help="Para envio de promoções futuras")
+    nasc_val = safe_date('in_nascimento', None)
+    col_c5.date_input("Data Nascimento", value=nasc_val, min_value=date(1900, 1, 1), max_value=date.today(),
+                      key="in_nascimento", format="DD/MM/YYYY", disabled=bloqueado)
 
     col_ce1, col_ce2, col_ce3, col_ce4, col_ce5 = st.columns([1, 2, 1, 1.5, 1.5])
     cep_cli = col_ce1.text_input("CEP Cli.", key="in_cli_cep", on_change=_buscar_cep_cli, disabled=bloqueado)
@@ -196,7 +267,8 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
 
     st.subheader("📍 Local do Evento")
     col_ev0, col_ev_dup = st.columns([2, 1])
-    data_evt = col_ev0.date_input("Data do Evento", value=date.today(), key="in_data", disabled=bloqueado)
+    data_evt_val = safe_date('in_data', date.today())
+    data_evt = col_ev0.date_input("Data do Evento", value=data_evt_val, key="in_data", disabled=bloqueado)
     usar_mesmo_end = col_ev_dup.checkbox("🏠 Mesmo endereço do cliente?", key="chk_mesmo_end",
                                          on_change=_copiar_endereco, disabled=bloqueado)
 
@@ -219,7 +291,6 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
 
     itens_pers, itens_desc, preco_base = [], [], 0.0
     if nivel == "Montar Personalizado (Do Zero)":
-        st.markdown("### 🛠️ Monte o Kit Item por Item:")
         itens_pers = st.multiselect("Acervo Completo:", list(acervo.keys()), key="in_itens_pers", disabled=bloqueado)
         preco_base = sum(acervo.get(i, 0) for i in itens_pers)
         itens_desc = itens_pers
@@ -233,21 +304,14 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
     itens_add = st.multiselect("Selecione itens avulsos:", list(acervo.keys()), key="in_itens_add", disabled=bloqueado)
     val_add = sum(acervo.get(i, 0) for i in itens_add)
 
-    # --- VERIFICAÇÃO DE ESTOQUE INTELIGENTE ---
+    # --- VERIFICAÇÃO DE ESTOQUE ---
     if not bloqueado:
         itens_para_validar = []
-
-        # 1. Adiciona itens personalizados (se houver)
         itens_para_validar.extend(itens_pers)
-
-        # 2. Adiciona itens extras (se houver)
         itens_para_validar.extend(itens_add)
-
-        # 3. Adiciona itens DO KIT (se for um kit pronto)
         if nivel != "Montar Personalizado (Do Zero)" and nivel in kits:
             desc_kit = kits[nivel]["descricao"]
             for d in desc_kit:
-                # Parse: "2x Vaso" ou "Mesa"
                 partes_item = d.split('x ', 1)
                 if len(partes_item) > 1:
                     try:
@@ -259,29 +323,22 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
                 else:
                     qtd_k = 1
                     nome_k = d.strip()
-
-                # Adiciona N vezes na lista para contar corretamente
                 itens_para_validar.extend([nome_k] * qtd_k)
 
         avisos_estoque = []
         mapa_ocupacao = InventoryService.calcular_mapa_ocupacao(st.session_state.get('db_orcamentos', []))
-
-        # Usa Counter para somar tudo (ex: Kit tem 1 Vaso + Extra tem 1 Vaso = Precisa de 2)
         contagem_necessaria = Counter(itens_para_validar)
 
         for it, qtd_nec in contagem_necessaria.items():
             qtd_total = estoque_dict.get(it, 0)
             usados_dia = mapa_ocupacao.get(str(data_evt), {}).get(it, 0)
-
             disponivel = qtd_total - usados_dia
-            if disponivel < 0: disponivel = 0  # Segurança
-
+            if disponivel < 0: disponivel = 0
             if disponivel < qtd_nec:
-                avisos_estoque.append(
-                    f"⚠️ **{it}:** Precisa de {qtd_nec}, mas só tem {disponivel} livres nesta data (Total: {qtd_total} | Alugados: {usados_dia}).")
+                avisos_estoque.append(f"⚠️ **{it}:** Precisa de {qtd_nec}, mas só tem {disponivel} livres.")
 
         if avisos_estoque:
-            st.error("🚨 **ALERTA DE ESTOQUE (Overbooking):**\n" + "\n".join(avisos_estoque))
+            st.error("🚨 **ALERTA DE ESTOQUE:**\n" + "\n".join(avisos_estoque))
 
     obs_alt = ""
     if nivel != "Montar Personalizado (Do Zero)" and st.checkbox("🔄 Houve troca de itens?", key="in_check_obs",
@@ -289,15 +346,59 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
         obs_alt = st.text_input("Descreva a alteração:", key="in_obs", disabled=bloqueado)
 
     st.subheader("3. Logística e Serviços")
-    frete, mao_obra, dist, horas = 0.0, 0.0, 0.0, 0.0
+
     tipo_entrega = st.radio("Logística:", ["Pegue e Monte", "Nós Levamos e Montamos"], key="in_entrega",
                             disabled=bloqueado)
-    if tipo_entrega == "Nós Levamos e Montamos":
+
+    frete, mao_obra, dist, horas = 0.0, 0.0, 0.0, 0.0
+
+    # --- LOGICA DE HORARIOS ---
+    # Inicializa variáveis
+    txt_ret_whats = ""
+    txt_dev_whats = ""
+
+    if tipo_entrega == "Pegue e Monte":
+        st.info("📅 Agendamento de Retirada e Devolução")
+
+        # Garante que os valores para os componentes sejam OBJETOS DE DATA e HORA, nunca string
+        d_ret_val = safe_date('in_data_retirada', data_evt)
+        h_ret_i_val = safe_time('in_hora_ret_i', datetime.time(10, 0))
+        h_ret_f_val = safe_time('in_hora_ret_f', datetime.time(11, 0))
+
+        d_dev_val = safe_date('in_data_devolucao', data_evt + datetime.timedelta(days=1))
+        h_dev_i_val = safe_time('in_hora_dev_i', datetime.time(9, 0))
+        h_dev_f_val = safe_time('in_hora_dev_f', datetime.time(10, 0))
+
+        c_r1, c_r2, c_r3 = st.columns([1.5, 1, 1])
+        c_r1.date_input("📤 Data Retirada", value=d_ret_val, key="in_data_retirada", disabled=bloqueado)
+        c_r2.time_input("Entre", value=h_ret_i_val, key="in_hora_ret_i", disabled=bloqueado)
+        c_r3.time_input("E as", value=h_ret_f_val, key="in_hora_ret_f", disabled=bloqueado)
+
+        c_d1, c_d2, c_d3 = st.columns([1.5, 1, 1])
+        c_d1.date_input("📥 Data Devolução", value=d_dev_val, key="in_data_devolucao", disabled=bloqueado)
+        c_d2.time_input("Entre", value=h_dev_i_val, key="in_hora_dev_i", disabled=bloqueado)
+        c_d3.time_input("E as", value=h_dev_f_val, key="in_hora_dev_f", disabled=bloqueado)
+
+        # Formata string apenas para exibição (WhatsApp e PDF)
+        txt_retirada = f"{d_ret_val.strftime('%d/%m/%Y')} entre {h_ret_i_val.strftime('%H:%M')} e {h_ret_f_val.strftime('%H:%M')}"
+        txt_devolucao = f"{d_dev_val.strftime('%d/%m/%Y')} entre {h_dev_i_val.strftime('%H:%M')} e {h_dev_f_val.strftime('%H:%M')}"
+
+        st.session_state['txt_retirada_final'] = txt_retirada
+        st.session_state['txt_devolucao_final'] = txt_devolucao
+
+        txt_ret_whats = f"📤 Retirada: {txt_retirada}"
+        txt_dev_whats = f"📥 Devolução: {txt_devolucao}"
+
+    elif tipo_entrega == "Nós Levamos e Montamos":
         c1, c2 = st.columns(2)
         dist = c1.number_input("Distância Ida (KM)", value=5.0, key="in_dist", disabled=bloqueado)
         horas = c2.number_input("Horas Totais", value=3.0, key="in_horas", disabled=bloqueado)
         frete = (dist * 4) * st.session_state['cfg_km']
         mao_obra = horas * st.session_state['cfg_hora']
+
+        st.session_state['txt_retirada_final'] = "Entrega pela NT Festas (Horário a combinar)"
+        st.session_state['txt_devolucao_final'] = "Retirada pela NT Festas (Horário a combinar)"
+        txt_ret_whats = "🚚 Logística: Entrega e Montagem pela NT Festas"
 
     custo_baloes, desc_balao = 0.0, ""
     if st.checkbox("Adicionar Balões?", key="in_check_balao", disabled=bloqueado):
@@ -318,27 +419,28 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
     liquido = bruto - val_desc
     sinal, restante = liquido * 0.30, liquido * 0.70
 
-    txt_itens = f"- KIT PERSONALIZADO:\n" if nivel == "Montar Personalizado (Do Zero)" else f"- ESTRUTURA {nivel.upper()}:\n"
+    # Montagem do Texto de WhatsApp (CORRIGIDO: INCLUI AS DATAS DE LOGÍSTICA)
+    txt_itens = f"- KIT {nivel}:\n" if nivel != "Montar Personalizado (Do Zero)" else "- PERSONALIZADO:\n"
     for i in itens_desc: txt_itens += f"  • {i}\n"
-    if obs_alt: txt_itens += f"⚠️ OBS: {obs_alt}\n"
-    if itens_add:
-        txt_itens += "\n- ITENS ADICIONAIS:\n"
-        for i in itens_add: txt_itens += f"  • {i}\n"
+    if itens_add: txt_itens += "\n- ITENS ADICIONAIS:\n" + "\n".join([f"  • {i}" for i in itens_add])
 
     texto_whats = f"""
 *ORÇAMENTO NT FESTAS* 🎈
 Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
-📅 Data: {data_evt}
+📅 Data do Evento: {data_evt.strftime('%d/%m/%Y')}
 📍 Local: {rua_evt}, {num_evt} - {cid_evt}
 
+*LOGÍSTICA E HORÁRIOS:*
+{txt_ret_whats}
+{txt_dev_whats}
+
 *COMPOSIÇÃO:*
-{detalhes.get(tema_sel, f"Tema: {tema_sel}")}
 {txt_itens}
 {f"- {desc_balao}" if custo_baloes > 0 else ""}
 
 *SERVIÇOS:*
 - Higienização e Embalagem
-{f"- Frete e Logística" if frete > 0 else "- Cliente retira e devolve (Pegue e Monte)"}
+{f"- Frete e Logística" if frete > 0 else ""}
 {f"- Montagem Profissional" if mao_obra > 0 else ""}
 
 -----------------------------
@@ -358,9 +460,7 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
             nums = "".join([c for c in celular if c.isdigit()])
             msg_encoded = urllib.parse.quote(texto_whats)
             link_zap = f"https://api.whatsapp.com/send?phone=55{nums}&text={msg_encoded}"
-            st.link_button("🚀 Enviar no WhatsApp", link_zap, type="secondary")
-        else:
-            st.warning("Preencha o WhatsApp do cliente para habilitar o envio.")
+            st.link_button("🚀 Enviar Rascunho no WhatsApp", link_zap, type="secondary")
 
         if not bloqueado:
             def _salvar():
@@ -368,9 +468,11 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
                     st.session_state['feedback_msg'] = ("error", "Preencha o nome do cliente.")
                     return
                 novo_id = int(time.time())
-
                 v_itens = preco_base + val_add + custo_baloes
                 v_servicos = frete + mao_obra + taxa_hig
+
+                dados_snapshot = {k: st.session_state[k] for k in st.session_state if
+                                  k.startswith('in_') or k == 'in_data'}
 
                 orcamento = {
                     "id": st.session_state['edit_id'] or novo_id,
@@ -384,14 +486,12 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
                     "valor_itens": v_itens,
                     "valor_servicos": v_servicos,
                     "valor_desconto": val_desc,
-                    "dados_form": {k: st.session_state[k] for k in st.session_state if
-                                   k.startswith('in_') or k == 'in_data'}
+                    "dados_form": dados_snapshot
                 }
                 with st.spinner("Salvando na nuvem..."):
                     SupabaseService.upsert_orcamento(orcamento)
 
                 st.session_state['db_orcamentos'] = SupabaseService.carregar_orcamentos()
-
                 msg = "Orçamento atualizado!" if st.session_state['edit_id'] else "Novo orçamento criado!"
                 st.session_state['feedback_msg'] = ("success", msg)
                 st.session_state['edit_id'] = None

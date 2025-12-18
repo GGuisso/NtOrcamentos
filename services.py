@@ -3,6 +3,8 @@ import requests
 import json
 import pandas as pd
 import time
+import tempfile
+import segno
 from datetime import datetime, date, time as dt_time
 from supabase import create_client, Client, ClientOptions
 from typing import Tuple, Dict, List, Any, Optional
@@ -14,9 +16,6 @@ from fpdf import FPDF
 VIACEP_URL = "https://viacep.com.br/ws/{}/json/"
 AUTENTIQUE_URL = "https://api.autentique.com.br/v2/graphql"
 
-
-# ID DA EMPRESA (TENANT) - ANTIGO (Removido, agora é dinâmico)
-# TENANT_ID = "nt_festas_01"
 
 def get_secret(key_name):
     """Busca segura de chaves no secrets.toml."""
@@ -57,6 +56,7 @@ class SupabaseService:
     @staticmethod
     @st.cache_resource
     def get_client() -> Client:
+        """Retorna o cliente PADRÃO (Anon Key). Respeita as regras de segurança (RLS)."""
         if not SUPA_URL or not SUPA_KEY:
             st.error("⚠️ Configure SUPABASE_URL e SUPABASE_KEY no secrets.toml")
             st.stop()
@@ -68,16 +68,12 @@ class SupabaseService:
         )
         return create_client(SUPA_URL, SUPA_KEY, options=options)
 
-    # ------------------------------------------------------------------
-    # 0. BUSCA DE CLIENTES
-    # ------------------------------------------------------------------
     @staticmethod
     def buscar_clientes(termo: str, por_cpf: bool = False) -> List[Dict]:
         supabase = SupabaseService.get_client()
         termo = termo.strip()
         if not termo: return []
 
-        # Pega o tenant da sessão para filtrar (redundância de segurança além do RLS)
         tenant = st.session_state.get('tenant_id')
         if not tenant: return []
 
@@ -96,9 +92,6 @@ class SupabaseService:
             print(f"Erro busca cliente: {e}")
             return []
 
-    # ------------------------------------------------------------------
-    # 1. GESTÃO DE ARQUIVOS
-    # ------------------------------------------------------------------
     @staticmethod
     def upload_imagem(file_obj, nome_arquivo_original: str) -> Optional[str]:
         try:
@@ -108,7 +101,6 @@ class SupabaseService:
             nome_limpo = "".join(
                 [c for c in nome_arquivo_original if c.isalnum() or c in (' ', '_', '.', '-')]).replace(" ", "_")
 
-            # Organiza pastas por Tenant no Storage
             path = f"{tenant}/{int(time.time())}_{nome_limpo}"
 
             file_bytes = file_obj.getvalue()
@@ -120,28 +112,22 @@ class SupabaseService:
             print(f"Erro Upload: {e}")
             return None
 
-    # ------------------------------------------------------------------
-    # 2. LEITURA DE DADOS (Agora filtrado por Tenant)
-    # ------------------------------------------------------------------
     @staticmethod
-    def carregar_catalogo() -> Tuple[Dict, Dict, Dict, Dict, Dict]:
-        supabase = SupabaseService.get_client()
-        tenant = st.session_state.get('tenant_id')
-
-        # Se não tiver tenant (login falhou ou não aconteceu), retorna vazio
-        if not tenant:
+    @st.cache_data(ttl=300, show_spinner=False)
+    def carregar_catalogo(tenant_id: str) -> Tuple[Dict, Dict, Dict, Dict, Dict]:
+        if not tenant_id:
             return {}, {}, {}, {}, {}
 
-        # A. Acervo
-        res_acervo = supabase.table("acervo").select("*").eq("tenant_id", tenant).eq("ativo", True).execute()
+        supabase = SupabaseService.get_client()
+
+        res_acervo = supabase.table("acervo").select("*").eq("tenant_id", tenant_id).eq("ativo", True).execute()
         acervo_dict = {}
         estoque_dict = {}
         for item in res_acervo.data:
             acervo_dict[item['nome']] = float(item['preco_aluguel'])
             estoque_dict[item['nome']] = int(item['quantidade_total'])
 
-        # B. Temas
-        res_temas = supabase.table("temas").select("*").eq("tenant_id", tenant).execute()
+        res_temas = supabase.table("temas").select("*").eq("tenant_id", tenant_id).execute()
         categorias = {}
         detalhes = {}
         for t in res_temas.data:
@@ -151,8 +137,7 @@ class SupabaseService:
             categorias[cat].append(tema_nome)
             detalhes[tema_nome] = t['detalhes'] or ""
 
-        # C. Kits
-        res_kits = supabase.table("kits").select("*").eq("tenant_id", tenant).execute()
+        res_kits = supabase.table("kits").select("*").eq("tenant_id", tenant_id).execute()
         kits_dict = {}
         for k in res_kits.data:
             items_desc = [x.strip() for x in str(k.get('descricao_comercial', '')).split(';') if x.strip()]
@@ -195,7 +180,9 @@ class SupabaseService:
                 "total": float(row['valor_total'] or 0.0),
                 "tema": tema_salvo,
                 "dados_form": dados_form,
-                "itens_reais_db": lista_itens_reais
+                "itens_reais_db": lista_itens_reais,
+                "picking_status": row.get('picking_status', {}) or {},
+                "link_uuid": row.get('link_uuid')
             }
             lista_final.append(orcamento_obj)
         return lista_final
@@ -252,9 +239,6 @@ class SupabaseService:
 
         return pd.DataFrame()
 
-    # ------------------------------------------------------------------
-    # 3. GRAVAÇÃO (MULTI-TENANT)
-    # ------------------------------------------------------------------
     @staticmethod
     def upsert_orcamento(orcamento: Dict):
         supabase = SupabaseService.get_client()
@@ -264,8 +248,6 @@ class SupabaseService:
             return
 
         dados_form = orcamento.get('dados_form', {})
-
-        # Sanitiza Datas
         dados_form_serializable = {}
         for k, v in dados_form.items():
             if isinstance(v, (date, datetime, dt_time)):
@@ -273,7 +255,6 @@ class SupabaseService:
             else:
                 dados_form_serializable[k] = v
 
-        # A. Cliente
         cli_nome = dados_form.get('in_nome')
         cli_cpf = dados_form.get('in_cpf')
         nasc = dados_form.get('in_nascimento')
@@ -283,7 +264,7 @@ class SupabaseService:
             nasc = None
 
         cliente_payload = {
-            "tenant_id": tenant,  # <--- OBRIGATÓRIO
+            "tenant_id": tenant,
             "nome": cli_nome,
             "cpf": cli_cpf if cli_cpf else None,
             "telefone": dados_form.get('in_telefone'),
@@ -304,9 +285,8 @@ class SupabaseService:
             res_new_cli = supabase.table("clientes").insert(cliente_payload).execute()
             cliente_id = res_new_cli.data[0]['id']
 
-        # B. Orçamento Header
         orc_payload = {
-            "tenant_id": tenant,  # <--- OBRIGATÓRIO
+            "tenant_id": tenant,
             "cliente_id": cliente_id,
             "data_evento": str(orcamento['data_evento']),
             "status": orcamento['status'],
@@ -324,14 +304,13 @@ class SupabaseService:
 
         orc_id = orcamento.get('id')
         if orc_id and isinstance(orc_id, int) and orc_id < 1000000000:
-            res_orc = supabase.table("orcamentos").update(orc_payload).eq("id", orc_id).execute()
+            supabase.table("orcamentos").update(orc_payload).eq("id", orc_id).execute()
             final_orc_id = orc_id
         else:
             res_orc = supabase.table("orcamentos").insert(orc_payload).execute()
             final_orc_id = res_orc.data[0]['id']
             orcamento['id'] = final_orc_id
 
-        # C. Salvar Itens
         supabase.table("orcamento_itens").delete().eq("orcamento_id", final_orc_id).execute()
 
         kit_selecionado_nome = dados_form.get('in_kit')
@@ -372,7 +351,7 @@ class SupabaseService:
                     qtd = itens_do_kit_map[nome_item] if eh_do_kit else 1
 
                     itens_insert.append({
-                        "tenant_id": tenant,  # <--- OBRIGATÓRIO
+                        "tenant_id": tenant,
                         "orcamento_id": final_orc_id,
                         "item_acervo_id": dados_db['id'],
                         "quantidade": qtd,
@@ -384,7 +363,7 @@ class SupabaseService:
                 if nome_item in mapa_acervo:
                     dados_db = mapa_acervo[nome_item]
                     itens_insert.append({
-                        "tenant_id": tenant,  # <--- OBRIGATÓRIO
+                        "tenant_id": tenant,
                         "orcamento_id": final_orc_id,
                         "item_acervo_id": dados_db['id'],
                         "quantidade": 1,
@@ -603,6 +582,107 @@ class AuthService:
 
 
 # ==========================================
+# 4. ADMINISTRAÇÃO E SEGURANÇA
+# ==========================================
+
+class AdminService:
+    @staticmethod
+    def get_admin_client() -> Client:
+        """
+        Cria um cliente especial usando a SUPABASE_SERVICE_KEY.
+        Este cliente BYPASSA o RLS e tem permissões de Admin.
+        Use apenas para operações administrativas.
+        """
+        service_key = get_secret("SUPABASE_SERVICE_KEY")
+        if not service_key:
+            st.error("⚠️ Configuração de segurança ausente: SUPABASE_SERVICE_KEY")
+            st.stop()
+
+        # Cria um cliente novo com poderes administrativos
+        return create_client(SUPA_URL, service_key)
+
+    @staticmethod
+    def criar_usuario_equipe(email, senha, nome, role, tenant_id):
+        """
+        Cria usuário no Auth e insere na tabela profiles usando a chave Service Role.
+        """
+        admin_supabase = AdminService.get_admin_client()
+
+        try:
+            # 1. Cria o usuário no Sistema de Autenticação (Auth)
+            user_response = admin_supabase.auth.admin.create_user({
+                "email": email,
+                "password": senha,
+                "email_confirm": True,  # Já nasce confirmado
+                "user_metadata": {"nome": nome}
+            })
+
+            new_user_id = user_response.user.id
+
+            # 2. Cria o Perfil vinculado à empresa (Tenant)
+            profile_payload = {
+                "id": new_user_id,
+                "tenant_id": tenant_id,
+                "email": email,
+                "nome": nome,
+                "role": role
+            }
+
+            # Insere no banco com poderes de admin (ignorando RLS)
+            admin_supabase.table("profiles").insert(profile_payload).execute()
+
+            return True, "Usuário criado com sucesso!"
+
+        except Exception as e:
+            msg_erro = str(e)
+            if "already registered" in msg_erro:
+                return False, "Este e-mail já está cadastrado."
+            return False, f"Erro ao criar usuário: {msg_erro}"
+
+    @staticmethod
+    def listar_equipe():
+        """
+        Lista usuários.
+        """
+        admin_supabase = AdminService.get_admin_client()
+
+        tenant = st.session_state.get('tenant_id')
+        if not tenant: return []
+
+        res = admin_supabase.table("profiles").select("*").eq("tenant_id", tenant).execute()
+        return res.data
+
+    @staticmethod
+    def excluir_usuario(user_id_alvo, tenant_atual):
+        """
+        Remove o usuário.
+        Segurança Crítica: Verifica se o usuario alvo pertence ao mesmo tenant
+        antes de deletar.
+        """
+        admin_supabase = AdminService.get_admin_client()
+
+        if not tenant_atual:
+            return False, "Sessão inválida."
+
+        try:
+            # 1. Verificar se o alvo pertence ao mesmo tenant
+            res = admin_supabase.table("profiles") \
+                .select("id") \
+                .eq("id", user_id_alvo) \
+                .eq("tenant_id", tenant_atual) \
+                .execute()
+
+            if not res.data:
+                return False, "Usuário não encontrado ou não pertence à sua equipe."
+
+            # 2. Se validou o tenant, pode deletar do Auth
+            admin_supabase.auth.admin.delete_user(user_id_alvo)
+            return True, "Usuário removido."
+        except Exception as e:
+            return False, str(e)
+
+
+# ==========================================
 # SERVIÇOS AUXILIARES (INVENTORY & PDF)
 # ==========================================
 class InventoryService:
@@ -626,9 +706,233 @@ class InventoryService:
 
     @staticmethod
     def verificar_disponibilidade_rapida(item_nome: str, data_evento: str, estoque_total: int, mapa_ocupacao: Dict) -> \
-    Tuple[int, int]:
+            Tuple[int, int]:
         uso = mapa_ocupacao.get(str(data_evento), {}).get(item_nome, 0)
         return uso, estoque_total - uso
+
+    @staticmethod
+    def atualizar_picking_status(orcamento_id, novo_status_dict):
+        """Salva o checklist de separação no banco (JSONB)"""
+        supabase = SupabaseService.get_client()
+        try:
+            supabase.table("orcamentos").update({
+                "picking_status": novo_status_dict
+            }).eq("id", orcamento_id).execute()
+            return True
+        except Exception as e:
+            print(f"Erro picking: {e}")
+            return False
+
+    @staticmethod
+    def gerar_picking_list(orcamentos_filtrados, tenant_id):
+        """
+        Gera a lista de separação.
+        Se os itens já estiverem salvos no banco (itens_reais_db), usa eles.
+        Caso contrário, tenta reconstruir baseado no Kit do formulário.
+        """
+        supabase = SupabaseService.get_client()
+
+        res_kits = supabase.table("kit_itens").select("kit_id, quantidade, acervo(nome), kits(nome)").eq("tenant_id",
+                                                                                                         tenant_id).execute()
+
+        mapa_composicao_kits = {}
+        for k in res_kits.data:
+            if k['kits'] and k['acervo']:
+                nome_kit = k['kits']['nome']
+                nome_item = k['acervo']['nome']
+                qtd_item = k['quantidade']
+                if nome_kit not in mapa_composicao_kits: mapa_composicao_kits[nome_kit] = []
+                mapa_composicao_kits[nome_kit].append({"item": nome_item, "qtd": qtd_item})
+
+        resumo_total = {}
+        detalhe_por_cliente = []
+
+        for orc in orcamentos_filtrados:
+            itens_brutos = []
+
+            if orc.get('itens_reais_db') and len(orc['itens_reais_db']) > 0:
+                itens_brutos.extend(orc['itens_reais_db'])
+            else:
+                dados_form = orc.get('dados_form', {})
+                nome_kit_vendido = dados_form.get('in_kit')
+
+                if nome_kit_vendido and nome_kit_vendido in mapa_composicao_kits:
+                    componentes = mapa_composicao_kits[nome_kit_vendido]
+                    for comp in componentes:
+                        itens_brutos.extend([comp['item']] * comp['qtd'])
+
+                itens_add = dados_form.get('in_itens_add', [])
+                itens_pers = dados_form.get('in_itens_pers', [])
+                itens_brutos.extend(itens_add)
+                itens_brutos.extend(itens_pers)
+
+            contagem_cliente = {}
+            for i in itens_brutos:
+                contagem_cliente[i] = contagem_cliente.get(i, 0) + 1
+                resumo_total[i] = resumo_total.get(i, 0) + 1
+
+            detalhe_por_cliente.append({
+                "id": orc['id'],
+                "cliente": orc['cliente'],
+                "data": orc['data_evento'],
+                "logistica": orc.get('logistica_tipo', 'Pegue e Monte'),
+                "endereco": f"{orc.get('endereco_evento_rua', '')}, {orc.get('endereco_evento_numero', '')}",
+                "itens": contagem_cliente,
+                "picking_saved": orc.get('picking_status', {})
+            })
+
+        return resumo_total, detalhe_por_cliente
+
+    @staticmethod
+    def registrar_avaria(item_nome, qtd_avariada, custo_prejuizo, cobrar_cliente, valor_cobrado, orcamento_id, obs):
+        supabase = SupabaseService.get_client()
+        tenant = st.session_state.get('tenant_id')
+
+        try:
+            res_item = supabase.table("acervo").select("*").eq("tenant_id", tenant).eq("nome", item_nome).execute()
+            if res_item.data:
+                item_db = res_item.data[0]
+                nova_qtd = max(0, item_db['quantidade_total'] - qtd_avariada)
+                supabase.table("acervo").update({"quantidade_total": nova_qtd}).eq("id", item_db['id']).execute()
+
+            data_hoje = str(date.today())
+            ts = int(time.time())
+
+            if custo_prejuizo > 0:
+                SupabaseService.registrar_transacao({
+                    "id": ts, "data": data_hoje, "tipo": "Despesa",
+                    "categoria": "Reposição/Avaria",
+                    "descricao": f"Avaria: {qtd_avariada}x {item_nome} (Ped #{orcamento_id}) - {obs}",
+                    "valor": custo_prejuizo, "quem": "Estoque", "forma_pagto": "Interno", "status": "Pago",
+                    "loja": "", "link": ""
+                })
+
+            if cobrar_cliente and valor_cobrado > 0:
+                SupabaseService.registrar_transacao({
+                    "id": ts + 1, "data": data_hoje, "tipo": "Receita",
+                    "categoria": "Indenização Avaria",
+                    "descricao": f"Multa Avaria - Cliente Ped #{orcamento_id}",
+                    "valor": valor_cobrado, "quem": "Cliente", "forma_pagto": "A Definir", "status": "A Receber",
+                    "loja": "", "link": ""
+                })
+
+            return True, "Avaria registrada e estoque atualizado."
+        except Exception as e:
+            return False, str(e)
+
+
+class PixService:
+    @staticmethod
+    def gerar_payload_pix(chave_pix: str, beneficiario_nome: str, beneficiario_cidade: str, valor: float,
+                          txid: str = "***") -> str:
+        """
+        Gera a string 'Copia e Cola' do Pix (Padrão EMV QRCPS) - CORRIGIDO.
+        """
+        try:
+            chave_pix = chave_pix.strip()
+            beneficiario_nome = beneficiario_nome[:25].strip().upper()
+            beneficiario_cidade = beneficiario_cidade[:15].strip().upper()
+            valor_str = f"{valor:.2f}"
+
+            # 1. Campos
+            gui = "0014br.gov.bcb.pix"
+
+            # CORREÇÃO: O tamanho do campo 01 (chave) é calculado baseado na chave fornecida
+            key_content = f"01{len(chave_pix):02}{chave_pix}"
+
+            # Campo 26: Merchant Account Info
+            merchant_content = f"{gui}{key_content}"
+            merchant_account = f"26{len(merchant_content):02}{merchant_content}"
+
+            merchant_category = "52040000"
+            currency = "5303986"
+            amount = f"54{len(valor_str):02}{valor_str}"
+            country = "5802BR"
+            name = f"59{len(beneficiario_nome):02}{beneficiario_nome}"
+            city = f"60{len(beneficiario_cidade):02}{beneficiario_cidade}"
+
+            txid_content = f"05{len(txid):02}{txid}"
+            additional_data = f"62{len(txid_content):02}{txid_content}"
+
+            # 2. Payload sem CRC
+            payload = f"000201{merchant_account}{merchant_category}{currency}{amount}{country}{name}{city}{additional_data}6304"
+
+            # 3. CRC Calculation
+            def crc16(data: str) -> str:
+                crc = 0xFFFF
+                poly = 0x1021
+                for char in data:
+                    crc ^= (ord(char) << 8)
+                    for _ in range(8):
+                        if crc & 0x8000:
+                            crc = (crc << 1) ^ poly
+                        else:
+                            crc <<= 1
+                    crc &= 0xFFFF
+                return f"{crc:04X}"
+
+            return payload + crc16(payload)
+        except Exception as e:
+            print(f"Erro Pix: {e}")
+            return ""
+
+
+class PublicService:
+    @staticmethod
+    def buscar_orcamento_uuid(uuid_str: str) -> Optional[Dict]:
+        """Busca orçamento usando a chave de ADMIN para bypassar o RLS"""
+        admin_client = AdminService.get_admin_client()
+        try:
+            res = admin_client.table("orcamentos").select(
+                "*, clientes(nome, cpf, telefone), orcamento_itens(quantidade, acervo(nome, foto_url, preco_aluguel))"
+            ).eq("link_uuid", uuid_str).execute()
+
+            if not res.data: return None
+
+            row = res.data[0]
+
+            itens_formatados = []
+            if row.get('orcamento_itens'):
+                for oi in row['orcamento_itens']:
+                    if oi.get('acervo'):
+                        itens_formatados.append({
+                            "nome": oi['acervo']['nome'],
+                            "foto": oi['acervo'].get('foto_url', ''),
+                            "qtd": oi['quantidade'],
+                            "preco": oi['acervo'].get('preco_aluguel', 0)
+                        })
+
+            return {
+                "id": row['id'],
+                "uuid": row['link_uuid'],
+                "cliente_nome": row['clientes']['nome'],
+                "cliente_cpf": row['clientes'].get('cpf', ''),
+                "cliente_whats": row['clientes']['telefone'],
+                "data_evento": row['data_evento'],
+                "status": row['status'],
+                "total": float(row['valor_total'] or 0),
+                "itens": itens_formatados,
+                "aceite_dados": row.get('aceite_dados', {}),
+                "dados_form": row.get('dados_form_snapshot') or {}
+            }
+        except Exception as e:
+            print(f"Erro Public: {e}")
+            return None
+
+    @staticmethod
+    def registrar_aceite(orc_id: int, ip_cliente: str):
+        admin_client = AdminService.get_admin_client()
+        timestamp = str(datetime.now())
+        try:
+            payload = {"aceite_em": timestamp, "ip": ip_cliente, "versao_termos": "v1.0"}
+            admin_client.table("orcamentos").update({
+                "status": "Aguardando Pagamento",
+                "aceite_dados": payload
+            }).eq("id", orc_id).execute()
+            return True, "Sucesso"
+        except Exception as e:
+            print(f"ERRO DE ACEITE: {e}")
+            return False, str(e)
 
 
 class PDFGenerator:
@@ -696,9 +1000,10 @@ class PDFGenerator:
             pdf.cell(90, 5, "NT FESTAS", align='C')
             pdf.cell(10, 5, "")
             pdf.cell(90, 5, cls._clean_text(dados_cli['nome']), align='C')
-            filename = f"contrato_{dados_cli['nome'].replace(' ', '_')}.pdf"
-            pdf.output(filename)
-            return filename
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
+                pdf.output(tmp_file.name)
+                return tmp_file.name
         except Exception as e:
             print(f"Erro PDF: {e}")
             raise e
