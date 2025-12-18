@@ -1,11 +1,60 @@
-#historico.py
-
 import streamlit as st
 import datetime
 import time
+import urllib.parse
 from datetime import date
 from services import SupabaseService
 from views.componentes import reset_form_state
+
+
+# --- MAPA DE STATUS GLOBAL ---
+def get_status_config(status):
+    mapa = {
+        "Aguardando Aprovação": {"icon": "🟡", "cor": "orange"},
+        "Aguardando Pagamento": {"icon": "💸", "cor": "red"},  # Destaque vermelho/financeiro
+        "Reserva Confirmada": {"icon": "🔵", "cor": "blue"},
+        "Itens Retirados": {"icon": "🚚", "cor": "violet"},
+        "Finalizado": {"icon": "✅", "cor": "green"},
+        "Cancelado": {"icon": "🔴", "cor": "grey"},
+        "Reprovado": {"icon": "🚫", "cor": "grey"}
+    }
+    return mapa.get(status, {"icon": "⚪", "cor": "grey"})
+
+
+# --- DIALOG PARA EXIBIR O LINK ---
+@st.dialog("🔗 Link de Aprovação do Cliente")
+def dialog_compartilhar_link(orcamento):
+    uuid_str = orcamento.get('link_uuid')
+
+    if not uuid_str:
+        st.warning("Este orçamento antigo não possui link gerado. Por favor, edite e salve-o novamente para gerar.")
+        return
+
+    base_url = st.secrets.get("BASE_URL", "")
+    if not base_url and "general" in st.secrets:
+        base_url = st.secrets["general"].get("BASE_URL", "http://localhost:8501")
+    if not base_url: base_url = "http://localhost:8501"
+
+    link_final = f"{base_url}/?proposta_id={uuid_str}"
+
+    st.write(f"Envie este link para **{orcamento['cliente']}**:")
+    st.code(link_final, language="text")
+
+    primeiro_nome = orcamento['cliente'].split()[0]
+    msg_zap = f"Olá {primeiro_nome}! 🎈\nSegue o link do seu orçamento para aprovação e pagamento do sinal:\n\n{link_final}"
+
+    dados_form = orcamento.get('dados_form', {})
+    telefone = dados_form.get('in_telefone', '')
+    nums = "".join([c for c in telefone if c.isdigit()])
+
+    if nums:
+        link_zap_btn = f"https://api.whatsapp.com/send?phone=55{nums}&text={urllib.parse.quote(msg_zap)}"
+        st.link_button("🚀 Enviar no WhatsApp", link_zap_btn, type="primary", use_container_width=True)
+    else:
+        st.info("Cadastre o telefone do cliente para habilitar o botão de envio direto.")
+
+    st.markdown("---")
+    st.caption("Ao acessar este link, o cliente verá as fotos, totais e poderá pagar o sinal via Pix.")
 
 
 @st.dialog("Gerenciar Status")
@@ -13,9 +62,9 @@ def dialog_gerenciar_status(orcamento):
     st.write(f"Gerenciar Pedido: **{orcamento['cliente']}**")
     st.caption(f"Status Atual: {orcamento['status']}")
 
-    # Lista Oficial de Status (Fluxo Limpo)
     lista_status = [
         "Aguardando Aprovação",
+        "Aguardando Pagamento",
         "Reserva Confirmada",
         "Itens Retirados",
         "Finalizado",
@@ -23,7 +72,6 @@ def dialog_gerenciar_status(orcamento):
         "Reprovado"
     ]
 
-    # Encontra o índice atual. Se não achar (erro de dados), começa do zero.
     try:
         idx_atual = lista_status.index(orcamento['status'])
     except ValueError:
@@ -31,7 +79,6 @@ def dialog_gerenciar_status(orcamento):
 
     novo_status = st.selectbox("Novo Status", lista_status, index=idx_atual)
 
-    # Valores para sugestão
     total = orcamento.get('total', 0)
     sinal_estimado = total * 0.30
     restante_estimado = total * 0.70
@@ -39,8 +86,6 @@ def dialog_gerenciar_status(orcamento):
     financeiro_payload = None
 
     # --- LÓGICA FINANCEIRA ---
-
-    # 1. RESERVA (SINAL 30%)
     if novo_status == "Reserva Confirmada" and orcamento['status'] != "Reserva Confirmada":
         st.info("💰 Gerar lançamento de SINAL (30%)")
         val_sinal = st.number_input("Valor Recebido (R$)", value=sinal_estimado)
@@ -54,7 +99,6 @@ def dialog_gerenciar_status(orcamento):
                 "valor": val_sinal, "quem": "Sistema", "forma_pagto": forma, "status": "Recebido"
             }
 
-    # 2. RETIRADA (RESTANTE 70%)
     elif novo_status == "Itens Retirados" and orcamento['status'] != "Itens Retirados":
         st.info("🚚 O cliente está levando os itens? Hora de cobrar o restante!")
         val_rest = st.number_input("Valor Restante (R$)", value=restante_estimado)
@@ -72,14 +116,11 @@ def dialog_gerenciar_status(orcamento):
                     "valor": val_rest, "quem": "Sistema", "forma_pagto": forma, "status": "Recebido"
                 }
 
-    # 3. FINALIZADO (DEVOLUÇÃO)
     elif novo_status == "Finalizado":
         st.success("✅ O pedido será arquivado como concluído.")
-        st.write("Verifique se houve quebras ou avarias antes de finalizar.")
         if st.button("Finalizar Pedido"):
             financeiro_payload = "SKIP"
 
-    # 4. CANCELAMENTO
     elif novo_status == "Cancelado":
         st.warning("⚠️ Cancelamento")
         houve_reembolso = st.checkbox("Houve reembolso?")
@@ -95,7 +136,6 @@ def dialog_gerenciar_status(orcamento):
             if st.button("Cancelar Sem Estorno"):
                 financeiro_payload = "SKIP"
 
-    # OUTROS (Reprovado, etc)
     else:
         if st.button("Atualizar Status"):
             financeiro_payload = "SKIP"
@@ -109,17 +149,50 @@ def dialog_gerenciar_status(orcamento):
         with st.spinner("Atualizando Status..."):
             orcamento['status'] = novo_status
             SupabaseService.upsert_orcamento(orcamento)
-
-            # Atualiza Cache Local
-            st.session_state['db_orcamentos'] = [
-                orcamento if o['id'] == orcamento['id'] else o
-                for o in st.session_state['db_orcamentos']
-            ]
+            st.session_state['db_orcamentos'] = SupabaseService.carregar_orcamentos()
             st.rerun()
+
+
+def carregar_orcamento_para_edicao(oid, dados):
+    st.session_state['edit_id'] = oid
+    # Limpa e carrega dados
+    reset_form_state()
+    for k, v in dados.items():
+        if k == 'in_data':
+            if isinstance(v, str):
+                try:
+                    v = datetime.datetime.strptime(v[:10], '%Y-%m-%d').date()
+                except:
+                    pass
+        if k == 'in_nascimento' and v is not None:
+            if isinstance(v, str):
+                try:
+                    v = datetime.datetime.strptime(v[:10], '%Y-%m-%d').date()
+                except:
+                    v = None
+
+        # Recupera horários
+        if k in ['in_hora_ret_i', 'in_hora_ret_f', 'in_hora_dev_i', 'in_hora_dev_f']:
+            if isinstance(v, str):
+                try:
+                    v = datetime.datetime.strptime(v, '%H:%M:%S').time()
+                except:
+                    pass
+
+        st.session_state[k] = v
+    st.session_state['navegacao_atual'] = "📝 Novo Orçamento"
 
 
 def render_historico():
     st.header("📂 Histórico de Pedidos")
+
+    # --- BOTÃO DE REFRESH ---
+    c_top1, c_top2 = st.columns([4, 1])
+    if c_top2.button("🔄 Atualizar Lista", use_container_width=True):
+        st.session_state['db_orcamentos'] = SupabaseService.carregar_orcamentos()
+        st.rerun()
+    # -------------------------------
+
     db = st.session_state.get('db_orcamentos', [])
 
     if not db:
@@ -129,63 +202,44 @@ def render_historico():
     c_f1, c_f2 = st.columns(2)
     busca = c_f1.text_input("🔍 Buscar Cliente ou ID")
 
-    opcoes_filtro = ["Aguardando Aprovação", "Reserva Confirmada", "Itens Retirados", "Finalizado", "Cancelado",
-                     "Reprovado"]
+    opcoes_filtro = ["Aguardando Aprovação", "Aguardando Pagamento", "Reserva Confirmada", "Itens Retirados",
+                     "Finalizado", "Cancelado", "Reprovado"]
     filtro_st = c_f2.multiselect("Filtrar por Status", opcoes_filtro)
 
-    # Ordenação e Filtros
     lista = sorted(db, key=lambda x: str(x['id']), reverse=True)
     if busca:
         lista = [x for x in lista if busca.lower() in x['cliente'].lower() or str(x['id']) in busca]
     if filtro_st:
         lista = [x for x in lista if x.get('status') in filtro_st]
 
-    # Renderização da Lista
     for orc in lista:
-        with st.container():
+        with st.container(border=True):
             status = orc.get('status', 'Aguardando Aprovação')
+            config = get_status_config(status)
 
-            # Mapa de Cores Limpo
-            mapa_cores = {
-                "Aguardando Aprovação": "🟡",
-                "Reserva Confirmada": "🔵",
-                "Itens Retirados": "🟣",
-                "Finalizado": "🟢",
-                "Cancelado": "🔴",
-                "Reprovado": "⚫"
-            }
-            cor = mapa_cores.get(status, "⚪")
-
-            # Layout do Card
             c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
 
             c1.markdown(f"**#{orc['id']} - {orc['cliente']}**")
             c1.caption(f"📅 {orc['data_evento']} | 🎨 {orc.get('tema', '-')}")
 
             c2.write(f"R$ {orc.get('total', 0):.2f}")
-            c3.markdown(f"{cor} **{status}**")
+
+            # Badge de Status colorido
+            c3.markdown(f":{config['cor']}[{config['icon']} **{status}**]")
 
             bts = c4.columns([1, 1, 1])
 
-            # Botão Carregar/Editar
-            def _carregar(oid=orc['id'], dados=orc['dados_form']):
-                st.session_state['edit_id'] = oid
-                for k, v in dados.items():
-                    if k == 'in_data':
-                        try:
-                            v = datetime.datetime.strptime(v, '%Y-%m-%d').date()
-                        except:
-                            pass
-                    st.session_state[k] = v
-                st.session_state['navegacao_atual'] = "📝 Novo Orçamento"
+            pode_editar = (status in ["Aguardando Aprovação", "Aguardando Pagamento", "Rascunho"])
+            bts[0].button(
+                "✏️" if pode_editar else "👁️",
+                key=f"e_{orc['id']}",
+                on_click=carregar_orcamento_para_edicao,
+                args=(orc['id'], orc['dados_form']),
+                help="Ver detalhes ou Editar"
+            )
 
-            # Só pode editar se ainda não foi aprovado
-            pode_editar = (status == "Aguardando Aprovação")
-            bts[0].button("✏️" if pode_editar else "👁️", key=f"e_{orc['id']}", on_click=_carregar,
-                          help="Ver detalhes ou Editar")
+            if bts[1].button("🔗", key=f"lk_{orc['id']}", help="Link do Cliente"):
+                dialog_compartilhar_link(orc)
 
-            # Botão Status
-            if bts[1].button("🔄", key=f"st_{orc['id']}", help="Mudar Status"):
+            if bts[2].button("🔄", key=f"st_{orc['id']}", help="Mudar Status"):
                 dialog_gerenciar_status(orc)
-
-            st.markdown("---")

@@ -24,20 +24,21 @@ def render_calendario():
     # 1. Transformar os Orçamentos em "Eventos"
     events = []
 
+    # Mapa de Cores Equalizado com o Histórico
     color_map = {
         "Aguardando Aprovação": "#F1C40F",  # Amarelo
-        "Aguardando": "#F1C40F",  # Amarelo (Legado)
-        "Reserva Confirmada": "#3498DB",  # Azul
-        "Itens Retirados": "#9B59B6",  # Roxo
-        "Evento Realizado": "#9B59B6",  # Roxo (Legado)
-        "Finalizado": "#2ECC71",  # Verde
-        "Cancelado": "#E74C3C",  # Vermelho
-        "Reprovado": "#95A5A6"  # Cinza
+        "Aguardando Pagamento": "#E67E22",  # Laranja (Novo)
+        "Reserva Confirmada": "#3498DB",    # Azul
+        "Itens Retirados": "#9B59B6",       # Roxo
+        "Finalizado": "#2ECC71",            # Verde
+        "Cancelado": "#E74C3C",             # Vermelho
+        "Reprovado": "#95A5A6"              # Cinza
     }
 
     for orc in db:
         status = orc.get('status', 'Aguardando Aprovação')
 
+        # Se quiser esconder cancelados do calendário, mantenha essa linha:
         if status == 'Cancelado': continue
 
         try:
@@ -46,11 +47,14 @@ def render_calendario():
 
             titulo = f"{orc['cliente']} - {orc.get('tema', '?')}"
 
+            # Define a cor baseada no status, ou cinza se não achar
+            cor_evento = color_map.get(status, "#808080")
+
             events.append({
                 "title": titulo,
                 "start": data_str,
-                "backgroundColor": color_map.get(status, "#808080"),
-                "borderColor": color_map.get(status, "#808080"),
+                "backgroundColor": cor_evento,
+                "borderColor": cor_evento,
                 "extendedProps": {
                     "id": orc['id'],
                     "valor": orc.get('total', 0),
@@ -60,7 +64,7 @@ def render_calendario():
         except Exception as e:
             continue
 
-    # 2. Configurações do Calendário (AJUSTADO PARA TAMANHO COMPACTO)
+    # 2. Configurações do Calendário
     calendar_options = {
         "headerToolbar": {
             "left": "today prev,next",
@@ -72,9 +76,9 @@ def render_calendario():
         "navLinks": True,
         "selectable": True,
         "editable": False,
-        "height": 600,  # <--- AQUI: Define altura fixa (evita ficar gigante)
-        "contentHeight": "auto",  # Ajusta o conteúdo para não gerar scroll desnecessário
-        "aspectRatio": 2,  # Tenta manter uma proporção mais larga e menos alta
+        "height": 600,
+        "contentHeight": "auto",
+        "aspectRatio": 2,
     }
 
     # 3. Renderiza o Calendário
@@ -85,10 +89,10 @@ def render_calendario():
         .fc-event-title {
             font-weight: bold;
             font-size: 0.85em;
-            white-space: normal; /* Permite quebra de linha no título se for longo */
+            white-space: normal;
         }
         .fc-toolbar-title {
-            font-size: 1.2em !important; /* Diminui o tamanho do título do mês */
+            font-size: 1.2em !important;
         }
         """,
         key="my_calendar"
@@ -107,7 +111,9 @@ def render_calendario():
         c2.metric("Status", props["status"])
         c3.metric("Valor Total", f"R$ {props['valor']:.2f}")
 
+        # Botão para ir direto editar (opcional, apenas informativo)
         st.info(f"Para gerenciar este pedido, vá em **Histórico** e busque pelo ID **#{props['id']}**.")
 
     st.markdown("---")
-    st.caption("Legenda: 🟡 Aguardando Aprovação | 🔵 Confirmado | 🟣 Itens Retirados | 🟢 Finalizado")
+    # Legenda atualizada com as novas cores
+    st.caption("Legenda: 🟡 Aprovação | 🟠 Pagamento | 🔵 Confirmado | 🟣 Retirado | 🟢 Finalizado")
