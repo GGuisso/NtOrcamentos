@@ -5,18 +5,8 @@
   </component>
   <component name="ChangeListManager">
     <list default="true" id="172730df-b753-4731-a10b-026a918c3925" name="Changes" comment="">
-      <change afterPath="$PROJECT_DIR$/views/logistica.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/views/publico.py" afterDir="false" />
-      <change afterPath="$PROJECT_DIR$/views/usuarios.py" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/main.py" beforeDir="false" afterPath="$PROJECT_DIR$/main.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/services.py" beforeDir="false" afterPath="$PROJECT_DIR$/services.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/calendario.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/calendario.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/componentes.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/componentes.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/financeiro.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/financeiro.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/gestao.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/gestao.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/historico.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/historico.py" afterDir="false" />
-      <change beforePath="$PROJECT_DIR$/views/orcamento.py" beforeDir="false" afterPath="$PROJECT_DIR$/views/orcamento.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/requirements.txt" beforeDir="false" afterPath="$PROJECT_DIR$/requirements.txt" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -48,7 +38,7 @@
     "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
     "RunOnceActivity.git.unshallow": "true",
     "RunOnceActivity.typescript.service.memoryLimit.init": "true",
-    "git-widget-placeholder": "Merging main",
+    "git-widget-placeholder": "main",
     "ignore.virus.scanning.warn.message": "true",
     "last_opened_file_path": "C:/Users/gui_o/PycharmProjects/NtOrcamentos",
     "node.js.detected.package.eslint": "true",
