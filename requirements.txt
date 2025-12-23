@@ -8,3 +8,4 @@ supabase
 streamlit-calendar
 segno
 plotly
+extra-streamlit-components

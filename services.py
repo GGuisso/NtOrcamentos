@@ -69,6 +69,49 @@ class SupabaseService:
         return create_client(SUPA_URL, SUPA_KEY, options=options)
 
     @staticmethod
+    def carregar_configuracoes(tenant_id: str) -> Dict:
+        """Carrega configs do banco. Se não existir, cria uma padrão."""
+        supabase = SupabaseService.get_client()
+        # Se não tiver tenant, retorna o padrão hardcoded
+        if not tenant_id:
+            return {"custo_km": 2.0, "custo_hora": 50.0, "taxa_higienizacao": 20.0}
+
+        try:
+            res = supabase.table("configuracoes").select("*").eq("tenant_id", tenant_id).execute()
+
+            if res.data:
+                return res.data[0]
+            else:
+                # Se não existe config para este tenant, cria a padrão agora
+                payload = {
+                    "tenant_id": tenant_id,
+                    "custo_km": 2.00,
+                    "custo_hora": 50.00,
+                    "taxa_higienizacao": 20.00
+                }
+                res_new = supabase.table("configuracoes").insert(payload).execute()
+                return res_new.data[0]
+        except Exception as e:
+            print(f"Erro Config: {e}")
+            return {"custo_km": 2.0, "custo_hora": 50.0, "taxa_higienizacao": 20.0}
+
+    @staticmethod
+    def atualizar_configuracoes(tenant_id: str, dados: Dict):
+        supabase = SupabaseService.get_client()
+        try:
+            # ADICIONA O TENANT_ID AO PACOTE DE DADOS
+            # Isso é obrigatório para criar a linha nova se ela não existir
+            dados['tenant_id'] = tenant_id
+
+            # MUDA DE .update() PARA .upsert()
+            # on_conflict="tenant_id" garante que ele sabe qual linha buscar
+            supabase.table("configuracoes").upsert(dados, on_conflict="tenant_id").execute()
+
+            return True, "Configurações salvas com sucesso!"
+        except Exception as e:
+            return False, str(e)
+
+    @staticmethod
     def buscar_clientes(termo: str, por_cpf: bool = False) -> List[Dict]:
         supabase = SupabaseService.get_client()
         termo = termo.strip()
@@ -182,7 +225,8 @@ class SupabaseService:
                 "dados_form": dados_form,
                 "itens_reais_db": lista_itens_reais,
                 "picking_status": row.get('picking_status', {}) or {},
-                "link_uuid": row.get('link_uuid')
+                "link_uuid": row.get('link_uuid'),
+                "data_registro": row.get('created_at')
             }
             lista_final.append(orcamento_obj)
         return lista_final
@@ -546,7 +590,7 @@ class AuthService:
             # 1. Login Auth padrão
             response = supabase.auth.sign_in_with_password({"email": email, "password": senha})
 
-            if response.user:
+            if response.user and response.session:
                 # 2. Busca qual é a empresa (tenant) desse usuário
                 res_profile = supabase.table("profiles").select("tenant_id, role, nome").eq("id",
                                                                                             response.user.id).execute()
@@ -565,11 +609,47 @@ class AuthService:
                     "user_auth": response.user,
                     "tenant_id": tenant_id,
                     "role": role,
-                    "email": email
+                    "email": email,
+                    "access_token": response.session.access_token
                 }
             return False, "Credenciais inválidas."
         except Exception as e:
             return False, str(e)
+
+    @staticmethod
+    def get_user_by_token(token):
+        """Recupera sessão via Token (Cookie)"""
+        supabase = SupabaseService.get_client()
+        try:
+            # Tenta pegar o usuário usando o token do cookie
+            response = supabase.auth.get_user(token)
+
+            if response and response.user:
+                user = response.user
+
+                # Busca perfil (Tenant/Role)
+                res_profile = supabase.table("profiles").select("tenant_id, role, nome").eq("id", user.id).execute()
+
+                tenant_id = None
+                role = 'vendedor'
+
+                if res_profile.data:
+                    tenant_id = res_profile.data[0]['tenant_id']
+                    role = res_profile.data[0]['role']
+
+                # Restaura sessão
+                st.session_state['tenant_id'] = tenant_id
+
+                return {
+                    "user_auth": user,
+                    "tenant_id": tenant_id,
+                    "role": role,
+                    "email": user.email,
+                    "access_token": token
+                }
+            return None
+        except Exception:
+            return None
 
     @staticmethod
     def logout():

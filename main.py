@@ -1,4 +1,7 @@
 import streamlit as st
+import extra_streamlit_components as stx
+import time
+import datetime  # Movido para o topo para evitar erros
 
 # Configuração da página DEVE ser a primeira linha executável
 st.set_page_config(page_title="Orçamento NT Festas", page_icon="🎈", layout="wide")
@@ -12,8 +15,16 @@ from views.calendario import render_calendario
 from views.login import render_login
 from views.usuarios import render_usuarios
 from views.logistica import render_logistica
-from views.publico import render_view_publica  # <--- NOVO IMPORT
+from views.publico import render_view_publica
+from views.dashboard import render_dashboard
 from services import SupabaseService, AuthService
+
+# ==========================================
+# GERENCIADOR DE COOKIES (CORRIGIDO)
+# ==========================================
+# Removemos o @st.cache_resource e a função.
+# Instanciamos direto com uma KEY para manter a referência entre recargas.
+cookie_manager = stx.CookieManager(key="nt_festas_cookies")
 
 
 # ==========================================
@@ -43,11 +54,10 @@ def run_app():
     eh_admin = (role_user == 'admin')
 
     # Menu Base (Todos veem)
-    opcoes_menu = ["📝 Novo Orçamento", "📂 Histórico de Orçamentos", "📅 Calendário"]
+    opcoes_menu = ["📊 Dashboard", "📝 Novo Orçamento", "📂 Histórico de Orçamentos", "📅 Calendário"]
 
     # Menu Extra (Só Admin vê)
     if eh_admin:
-        # Adicionado "📦 Logística"
         opcoes_menu.extend(["📦 Logística", "💰 Financeiro", "⚙️ Gestão de Acervo", "👥 Equipe"])
     # ----------------------------------------------------
 
@@ -64,7 +74,8 @@ def run_app():
         st.markdown("---")
 
         # --- SINCRONIZAÇÃO DO MENU ---
-        nav_atual = st.session_state.get('navegacao_atual', "📝 Novo Orçamento")
+        nav_atual = st.session_state.get('navegacao_atual', "📊 Dashboard")
+
         try:
             idx_nav = opcoes_menu.index(nav_atual)
         except ValueError:
@@ -81,34 +92,56 @@ def run_app():
         if eh_admin:
             st.markdown("---")
             st.header("⚙️ Custos")
-            st.number_input("Custo KM", value=st.session_state.get('cfg_km', 2.00), step=0.10, key='cfg_km')
-            st.number_input("Vr. Hora Técnica", value=st.session_state.get('cfg_hora', 50.00), step=5.00,
-                            key='cfg_hora')
-            st.number_input("Taxa Higienização", value=st.session_state.get('cfg_taxa', 20.00), key='cfg_taxa')
+            # ATUALIZAÇÃO: Removemos 'value=' porque a key já existe no session_state
+            c_km = st.number_input("Custo KM", step=0.10, key='cfg_km')
+            c_hora = st.number_input("Vr. Hora Técnica", step=5.00, key='cfg_hora')
+            c_taxa = st.number_input("Taxa Higienização", step=1.00, key='cfg_taxa')
 
-            if st.button("🔄 Atualizar Dados"):
-                st.cache_data.clear()
-                st.rerun()
+            if st.button("💾 Salvar Configurações"):
+                with st.spinner("Gravando no banco..."):
+                    payload = {
+                        "custo_km": c_km,
+                        "custo_hora": c_hora,
+                        "taxa_higienizacao": c_taxa
+                    }
+                    ok, msg = SupabaseService.atualizar_configuracoes(tenant_id, payload)
+                    if ok:
+                        st.success(msg)
+                        time.sleep(1)
+                        st.rerun()
+                    else:
+                        st.error(msg)
         # ---------------------------------------------------------------
 
         st.markdown("---")
         if st.button("Sair (Logout)"):
             AuthService.logout()
             st.session_state['usuario_logado'] = None
+
+            # 1. Manda deletar o cookie
+            cookie_manager.delete("nt_access_token")
+
+            # 2. Mostra feedback visual
+            st.toast("Saindo do sistema...", icon="👋")
+
+            # 3. PAUSA OBRIGATÓRIA: Dá tempo para o navegador processar a deleção
+            time.sleep(2)
+
             st.rerun()
 
-    # Roteamento de Views
-    if nav == "📝 Novo Orçamento":
-        # CORREÇÃO: Se clicar no menu, limpa o modo edição para começar do zero
+    # --- ROTEAMENTO DE VIEWS ---
+
+    if nav == "📊 Dashboard":
+        st.session_state['edit_id'] = None
+        render_dashboard()
+
+    elif nav == "📝 Novo Orçamento":
         if st.session_state.get('navegacao_atual') != "📝 Novo Orçamento":
             st.session_state['edit_id'] = None
-            # Opcional: Limpar formulário também se quiser garantir tela limpa
-            # reset_form_state()
 
         render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict)
 
     elif nav == "📂 Histórico de Orçamentos":
-        # Garante que ao sair do form, o modo edição morra
         st.session_state['edit_id'] = None
         render_historico()
 
@@ -142,23 +175,37 @@ def run_app():
 
 
 # ==========================================
+# WRAPPER DE LOGIN (Para injetar o Cookie)
+# ==========================================
+def handle_login_ui():
+    """Renderiza o login e salva o cookie se der certo"""
+    email = st.text_input("E-mail")
+    senha = st.text_input("Senha", type="password")
+
+    if st.button("Entrar", type="primary", use_container_width=True):
+        ok, dados = AuthService.login(email, senha)
+        if ok:
+            st.session_state['usuario_logado'] = dados
+            # SALVA O COOKIE (Validade 7 dias)
+            # Usa datetime.datetime.now() pois importamos datetime
+            expires = datetime.datetime.now() + datetime.timedelta(days=7)
+            cookie_manager.set("nt_access_token", dados['access_token'], expires_at=expires)
+            st.rerun()
+        else:
+            st.error(dados)
+
+
+# ==========================================
 # FLUXO PRINCIPAL (GATEKEEPER)
 # ==========================================
 def main():
     # --- NOVO: ROTEAMENTO PÚBLICO (LINK DE APROVAÇÃO) ---
-    # Verifica se há parâmetros na URL (query params) ANTES de pedir login
     try:
-        # Pega parâmetros da URL
         params = st.query_params.to_dict()
-
-        # Se existir 'proposta_id', é um cliente acessando o link público
         if "proposta_id" in params:
-            # Renderiza a view pública e encerra a função main() aqui.
-            # O cliente não verá login nem sidebar.
             render_view_publica()
             return
     except Exception as e:
-        # Se der erro ao ler params, apenas segue o fluxo normal
         print(f"Erro roteamento: {e}")
         pass
     # ----------------------------------------------------
@@ -167,12 +214,32 @@ def main():
     if 'usuario_logado' not in st.session_state:
         st.session_state['usuario_logado'] = None
 
-    # Se não estiver logado, renderiza APENAS a tela de login e para.
-    if not st.session_state['usuario_logado']:
-        render_login()
-    else:
-        # Se estiver logado, roda o app normal
+    # Se NÃO estiver logado na memória, tenta recuperar via Cookie
+    if st.session_state['usuario_logado'] is None:
+        # Pega o cookie
+        cookies = cookie_manager.get_all()
+        token_cookie = cookies.get("nt_access_token")
+
+        if token_cookie:
+            # Valida token no Supabase
+            user_recuperado = AuthService.get_user_by_token(token_cookie)
+            if user_recuperado:
+                st.session_state['usuario_logado'] = user_recuperado
+                st.toast("Login restaurado!", icon="🍪")
+                time.sleep(0.5)
+                st.rerun()
+            else:
+                # Token inválido ou expirado
+                cookie_manager.delete("nt_access_token")
+
+    # Decisão de Renderização
+    if st.session_state['usuario_logado']:
         run_app()
+    else:
+        st.title("🔐 Acesso Restrito")
+        with st.container(border=True):
+            st.markdown("### NT Festas - Login")
+            handle_login_ui()
 
 
 if __name__ == "__main__":

@@ -58,10 +58,10 @@ def render_area_contrato(dados_cli, dados_evt, itens, total, sinal, restante):
         # Garante que a data seja um objeto date para formatação
         try:
             raw_date = dados_evt['data']
-            if isinstance(raw_date, str):
+            if isinstance(raw_date, str) and len(raw_date) >= 10:
                 d_evt_obj = datetime.datetime.strptime(raw_date[:10], '%Y-%m-%d').date()
             else:
-                d_evt_obj = raw_date
+                d_evt_obj = date.today()
         except:
             d_evt_obj = date.today()
 
@@ -135,65 +135,43 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
         c2.button("📑 Usar como base (Duplicar)", on_click=_duplicar, use_container_width=True)
         st.markdown("---")
 
-    # --- HELPERS DE DATA/HORA BLINDADOS (CORREÇÃO DO ERRO) ---
+    # --- HELPERS DE DATA/HORA BLINDADOS ---
     def safe_date(key, default):
-        """
-        Garante que o valor na sessão seja um objeto Date.
-        Se for String (vindo do banco), converte e ATUALIZA a sessão para evitar erro do Streamlit.
-        """
         val = st.session_state.get(key)
+        if not val: return default
 
-        # Se não existe ou é nulo, usa o default
-        if not val:
-            return default
-
-        # Se já é objeto Date ou Datetime
         if isinstance(val, (datetime.date, datetime.datetime)):
             if isinstance(val, datetime.datetime):
-                d = val.date()
-                if key in st.session_state: st.session_state[key] = d  # Corrige datetime -> date
-                return d
+                return val.date()
             return val
 
-        # Se for string, converte e salva na sessão
         if isinstance(val, str):
             try:
-                # Pega apenas os 10 primeiros chars (YYYY-MM-DD) ignorando hora se houver
-                d = datetime.datetime.strptime(val[:10], '%Y-%m-%d').date()
-                st.session_state[key] = d  # <--- ISSO CORRIGE O ERRO DE TYPEERROR
-                return d
+                return datetime.datetime.strptime(val[:10], '%Y-%m-%d').date()
             except:
                 return default
         return default
 
     def safe_time(key, default):
-        """Mesma lógica blindada para Time"""
         val = st.session_state.get(key)
         if not val: return default
 
         if isinstance(val, (datetime.time, datetime.datetime)):
             if isinstance(val, datetime.datetime):
-                t = val.time()
-                if key in st.session_state: st.session_state[key] = t
-                return t
+                return val.time()
             return val
 
         if isinstance(val, str):
             try:
-                # Tenta HH:MM:SS
-                t = datetime.datetime.strptime(val, '%H:%M:%S').time()
-                st.session_state[key] = t
-                return t
+                return datetime.datetime.strptime(val, '%H:%M:%S').time()
             except:
                 try:
-                    # Tenta HH:MM
-                    t = datetime.datetime.strptime(val, '%H:%M').time()
-                    st.session_state[key] = t
-                    return t
+                    return datetime.datetime.strptime(val, '%H:%M').time()
                 except:
                     return default
         return default
 
+    # --- LOGICA DE AUTOCOMPLETAR ---
     def _buscar_cep_cli():
         res = CepService.consultar(st.session_state.get("in_cli_cep", ""))
         if res:
@@ -246,6 +224,7 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
             st.session_state['in_cli_cidade'] = c.get('cidade', '')
             st.toast(f"Cliente {c['nome']} carregado!", icon="✅")
 
+    # --- UI: DADOS DO CLIENTE ---
     st.subheader("👤 Dados do Cliente")
     col_c1, col_c2, col_c3 = st.columns([2, 1, 1])
     nome = col_c1.text_input("Nome Completo", key="in_nome", disabled=bloqueado, on_change=_autocompletar_cliente)
@@ -265,10 +244,14 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
     bairro_cli = col_ce4.text_input("Bairro", key="in_cli_bairro", disabled=bloqueado)
     cid_cli = col_ce5.text_input("Cidade", key="in_cli_cidade", disabled=bloqueado)
 
+    # --- UI: LOCAL DO EVENTO ---
     st.subheader("📍 Local do Evento")
     col_ev0, col_ev_dup = st.columns([2, 1])
+
     data_evt_val = safe_date('in_data', date.today())
+    # O valor padrão 'date.today()' garante que nunca seja None no date_input
     data_evt = col_ev0.date_input("Data do Evento", value=data_evt_val, key="in_data", disabled=bloqueado)
+
     usar_mesmo_end = col_ev_dup.checkbox("🏠 Mesmo endereço do cliente?", key="chk_mesmo_end",
                                          on_change=_copiar_endereco, disabled=bloqueado)
 
@@ -280,6 +263,8 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
     cid_evt = col_ev5.text_input("Cidade", key="in_evt_cidade", disabled=bloqueado)
 
     st.markdown("---")
+
+    # --- UI: ITENS E KITS ---
     c_tm1, c_tm2 = st.columns(2)
     cat_sel = c_tm1.selectbox("Tipo de Festa", list(categorias.keys()) if categorias else ["Vazio"], key="in_categoria",
                               disabled=bloqueado)
@@ -304,7 +289,6 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
     itens_add = st.multiselect("Selecione itens avulsos:", list(acervo.keys()), key="in_itens_add", disabled=bloqueado)
     val_add = sum(acervo.get(i, 0) for i in itens_add)
 
-    # --- VERIFICAÇÃO DE ESTOQUE ---
     if not bloqueado:
         itens_para_validar = []
         itens_para_validar.extend(itens_pers)
@@ -345,27 +329,27 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
                                                                  disabled=bloqueado):
         obs_alt = st.text_input("Descreva a alteração:", key="in_obs", disabled=bloqueado)
 
+    # --- UI: LOGÍSTICA ---
     st.subheader("3. Logística e Serviços")
 
     tipo_entrega = st.radio("Logística:", ["Pegue e Monte", "Nós Levamos e Montamos"], key="in_entrega",
                             disabled=bloqueado)
 
     frete, mao_obra, dist, horas = 0.0, 0.0, 0.0, 0.0
-
-    # --- LOGICA DE HORARIOS ---
-    # Inicializa variáveis
-    txt_ret_whats = ""
-    txt_dev_whats = ""
+    txt_ret_whats, txt_dev_whats = "", ""
 
     if tipo_entrega == "Pegue e Monte":
         st.info("📅 Agendamento de Retirada e Devolução")
 
-        # Garante que os valores para os componentes sejam OBJETOS DE DATA e HORA, nunca string
+        default_devolucao = data_evt
+        if data_evt:
+            default_devolucao = data_evt + datetime.timedelta(days=1)
+
         d_ret_val = safe_date('in_data_retirada', data_evt)
+        d_dev_val = safe_date('in_data_devolucao', default_devolucao)
+
         h_ret_i_val = safe_time('in_hora_ret_i', datetime.time(10, 0))
         h_ret_f_val = safe_time('in_hora_ret_f', datetime.time(11, 0))
-
-        d_dev_val = safe_date('in_data_devolucao', data_evt + datetime.timedelta(days=1))
         h_dev_i_val = safe_time('in_hora_dev_i', datetime.time(9, 0))
         h_dev_f_val = safe_time('in_hora_dev_f', datetime.time(10, 0))
 
@@ -379,9 +363,13 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
         c_d2.time_input("Entre", value=h_dev_i_val, key="in_hora_dev_i", disabled=bloqueado)
         c_d3.time_input("E as", value=h_dev_f_val, key="in_hora_dev_f", disabled=bloqueado)
 
-        # Formata string apenas para exibição (WhatsApp e PDF)
-        txt_retirada = f"{d_ret_val.strftime('%d/%m/%Y')} entre {h_ret_i_val.strftime('%H:%M')} e {h_ret_f_val.strftime('%H:%M')}"
-        txt_devolucao = f"{d_dev_val.strftime('%d/%m/%Y')} entre {h_dev_i_val.strftime('%H:%M')} e {h_dev_f_val.strftime('%H:%M')}"
+        # --- CORREÇÃO DO ERRO NONE TYPE ---
+        # Formatadores seguros (lambdas)
+        fmt_d = lambda d: d.strftime('%d/%m/%Y') if d else "A definir"
+        fmt_t = lambda t: t.strftime('%H:%M') if t else "00:00"
+
+        txt_retirada = f"{fmt_d(d_ret_val)} entre {fmt_t(h_ret_i_val)} e {fmt_t(h_ret_f_val)}"
+        txt_devolucao = f"{fmt_d(d_dev_val)} entre {fmt_t(h_dev_i_val)} e {fmt_t(h_dev_f_val)}"
 
         st.session_state['txt_retirada_final'] = txt_retirada
         st.session_state['txt_devolucao_final'] = txt_devolucao
@@ -393,8 +381,8 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
         c1, c2 = st.columns(2)
         dist = c1.number_input("Distância Ida (KM)", value=5.0, key="in_dist", disabled=bloqueado)
         horas = c2.number_input("Horas Totais", value=3.0, key="in_horas", disabled=bloqueado)
-        frete = (dist * 4) * st.session_state['cfg_km']
-        mao_obra = horas * st.session_state['cfg_hora']
+        frete = (dist * 4) * st.session_state.get('cfg_km', 2.0)
+        mao_obra = horas * st.session_state.get('cfg_hora', 50.0)
 
         st.session_state['txt_retirada_final'] = "Entrega pela NT Festas (Horário a combinar)"
         st.session_state['txt_devolucao_final'] = "Retirada pela NT Festas (Horário a combinar)"
@@ -408,8 +396,9 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
         custo_baloes = metros * {"Arco Simples": 40, "Orgânico": 80, "Orgânico Premium": 120}[tipo_b]
         desc_balao = f"Arte com Balões: {tipo_b} ({metros}m)"
 
+    # --- FECHAMENTO ---
     st.subheader("4. Fechamento e Valores")
-    taxa_hig = st.session_state['cfg_taxa']
+    taxa_hig = st.session_state.get('cfg_taxa', 20.0)
     bruto = preco_base + val_add + frete + mao_obra + custo_baloes + taxa_hig
 
     c_d1, c_d2 = st.columns([1, 3])
@@ -419,15 +408,16 @@ def render_form_orcamento(acervo, categorias, kits, detalhes, estoque_dict):
     liquido = bruto - val_desc
     sinal, restante = liquido * 0.30, liquido * 0.70
 
-    # Montagem do Texto de WhatsApp (CORRIGIDO: INCLUI AS DATAS DE LOGÍSTICA)
     txt_itens = f"- KIT {nivel}:\n" if nivel != "Montar Personalizado (Do Zero)" else "- PERSONALIZADO:\n"
     for i in itens_desc: txt_itens += f"  • {i}\n"
     if itens_add: txt_itens += "\n- ITENS ADICIONAIS:\n" + "\n".join([f"  • {i}" for i in itens_add])
 
+    str_data_evt = data_evt.strftime('%d/%m/%Y') if data_evt else 'A definir'
+
     texto_whats = f"""
 *ORÇAMENTO NT FESTAS* 🎈
 Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
-📅 Data do Evento: {data_evt.strftime('%d/%m/%Y')}
+📅 Data do Evento: {str_data_evt}
 📍 Local: {rua_evt}, {num_evt} - {cid_evt}
 
 *LOGÍSTICA E HORÁRIOS:*
@@ -471,6 +461,7 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
                 v_itens = preco_base + val_add + custo_baloes
                 v_servicos = frete + mao_obra + taxa_hig
 
+                # Snapshot seguro
                 dados_snapshot = {k: st.session_state[k] for k in st.session_state if
                                   k.startswith('in_') or k == 'in_data'}
 
@@ -479,7 +470,7 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
                     "data_registro": str(datetime.date.today()),
                     "status": status_atual if st.session_state['edit_id'] else "Aguardando Aprovação",
                     "cliente": nome,
-                    "data_evento": str(data_evt),
+                    "data_evento": str(data_evt) if data_evt else None,
                     "cidade": cid_evt,
                     "tema": tema_sel,
                     "total": liquido,
@@ -532,8 +523,10 @@ Olá *{nome}*! Segue o orçamento para o tema *{tema_sel}*.
             st.success(f"### TOTAL: R$ {liquido:.2f}")
 
     st.markdown("---")
+
     dados_cli_pdf = {"nome": nome, "cpf": cpf, "cep": cep_cli, "rua": rua_cli, "numero": num_cli, "bairro": bairro_cli,
                      "cidade": cid_cli}
-    dados_evt_pdf = {"data": str(data_evt), "cep": cep_evt, "rua": rua_evt, "numero": num_evt, "bairro": bairro_evt,
+    dados_evt_pdf = {"data": str(data_evt) if data_evt else "", "cep": cep_evt, "rua": rua_evt, "numero": num_evt,
+                     "bairro": bairro_evt,
                      "cidade": cid_evt}
     render_area_contrato(dados_cli_pdf, dados_evt_pdf, txt_itens, liquido, sinal, restante)
