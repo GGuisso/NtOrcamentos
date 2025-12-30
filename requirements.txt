@@ -1,11 +1,13 @@
 streamlit
-fpdf
-requests
 pandas
-gspread
-oauth2client
-supabase
-streamlit-calendar
-segno
 plotly
 extra-streamlit-components
+supabase
+fpdf
+segno
+requests
+# --- Adições para a API ---
+fastapi
+uvicorn
+pydantic
+python-multipart

@@ -1,12 +1,15 @@
+# views/publico.py
 import streamlit as st
-import pandas as pd
-import time
 import io
 import urllib.parse
 import os
 from datetime import datetime
-from services import PublicService, PixService, PDFGenerator
 import segno
+
+# Importa serviços da nova pasta modularizada
+from services import PublicService, PixService, PDFGenerator
+# Importa as configurações centralizadas (Novo padrão)
+from services.config import PIX_KEY, PIX_NAME, PIX_CITY, get_secret
 
 
 def render_view_publica():
@@ -29,6 +32,7 @@ def render_view_publica():
 
     form = dados.get('dados_form', {})
 
+    # CSS para esconder a sidebar e deixar visual limpo (Mobile First)
     st.markdown("""
         <style>
             #MainMenu {visibility: hidden;}
@@ -56,7 +60,8 @@ def render_view_publica():
     elif status == "Reserva Confirmada":
         st.balloons()
         st.success("🎉 Reserva Confirmada! Tudo certo para sua festa.")
-        return  # Para a execução aqui se já estiver tudo 100%
+        # Opcional: retornar aqui se quiser esconder os detalhes após confirmado
+        # return
 
     # --- LOCAL E LOGÍSTICA ---
     st.markdown("### 📍 Dados do Evento")
@@ -70,10 +75,12 @@ def render_view_publica():
         st.markdown("**🗓️ AGENDAMENTO**")
 
         tipo_log = form.get('in_entrega', 'Pegue e Monte')
-        data_evt_fmt = datetime.strptime(dados['data_evento'], '%Y-%m-%d').strftime('%d/%m/%Y')
+        try:
+            data_evt_fmt = datetime.strptime(dados['data_evento'], '%Y-%m-%d').strftime('%d/%m/%Y')
+        except:
+            data_evt_fmt = "Data a definir"
 
         if tipo_log == "Pegue e Monte":
-            # Tenta recuperar as datas e horas exatas do formulário
             d_ret = form.get('in_data_retirada', dados['data_evento'])
             h_ret_i = form.get('in_hora_ret_i')
             h_ret_f = form.get('in_hora_ret_f')
@@ -82,37 +89,32 @@ def render_view_publica():
             h_dev_i = form.get('in_hora_dev_i')
             h_dev_f = form.get('in_hora_dev_f')
 
-            # Formatação de datas
-            try:
-                fmt_d_ret = datetime.strptime(str(d_ret), '%Y-%m-%d').strftime('%d/%m/%Y')
-                fmt_d_dev = datetime.strptime(str(d_dev), '%Y-%m-%d').strftime('%d/%m/%Y') if d_dev else "Dia seguinte"
-            except:
-                fmt_d_ret = data_evt_fmt
-                fmt_d_dev = "Dia seguinte"
+            # Helpers de formatação
+            def fmt_date(d):
+                try:
+                    return datetime.strptime(str(d)[:10], '%Y-%m-%d').strftime('%d/%m/%Y')
+                except:
+                    return data_evt_fmt
 
-            # Formatação de horas (corta segundos)
             def clean_time(t):
                 return str(t)[:5] if t else "??"
 
             c_ag1, c_ag2 = st.columns(2)
 
-            txt_retirada_display = f"{fmt_d_ret} entre {clean_time(h_ret_i)} e {clean_time(h_ret_f)}" if h_ret_i else "A combinar"
-            txt_devolucao_display = f"{fmt_d_dev} entre {clean_time(h_dev_i)} e {clean_time(h_dev_f)}" if h_dev_i else "A combinar"
+            txt_ret = f"{fmt_date(d_ret)} entre {clean_time(h_ret_i)} e {clean_time(h_ret_f)}" if h_ret_i else "A combinar"
+            txt_dev = f"{fmt_date(d_dev)} entre {clean_time(h_dev_i)} e {clean_time(h_dev_f)}" if h_dev_i else "A combinar"
 
-            c_ag1.write(f"**📤 Retirada:**\n{txt_retirada_display}")
-            c_ag2.write(f"**📥 Devolução:**\n{txt_devolucao_display}")
-
-            st.warning("⚠️ Transporte, montagem e desmontagem por conta do cliente.")
+            c_ag1.write(f"**📤 Retirada:**\n{txt_ret}")
+            c_ag2.write(f"**📥 Devolução:**\n{txt_dev}")
+            st.warning("⚠️ Transporte e montagem por conta do cliente.")
         else:
             st.metric("Logística", "Entrega e Montagem pela NT Festas")
             st.caption("Horários a combinar com a equipe.")
-            txt_retirada_display = f"{data_evt_fmt} (Horário a combinar)"
-            txt_devolucao_display = "Dia seguinte (Horário a combinar)"
+            txt_ret = f"{data_evt_fmt} (Horário a combinar)"
+            txt_dev = "Dia seguinte (Horário a combinar)"
 
     # --- GALERIA DE ITENS ---
     st.markdown("### 🎁 Itens Selecionados")
-
-    # Cria cards visuais para os itens
     for item in dados['itens']:
         with st.container(border=True):
             ci1, ci2 = st.columns([1, 3])
@@ -133,10 +135,9 @@ def render_view_publica():
     c_t1, c_t2 = st.columns([2, 1])
     c_t1.write("Valor Total:")
     c_t2.write(f"**R$ {subtotal:.2f}**")
-
     st.info(f"💰 **Sinal para Reserva (30%): R$ {sinal:.2f}**")
 
-    # --- PREPARAÇÃO DO PDF ---
+    # --- PDF HELPERS ---
     pdf_dados_cli = {
         "nome": dados['cliente_nome'],
         "cpf": dados.get('cliente_cpf', ''),
@@ -153,10 +154,9 @@ def render_view_publica():
     }
     itens_texto = "\n".join([f"- {i['qtd']}x {i['nome']}" for i in dados['itens']])
 
-    # --- FLUXO DE APROVAÇÃO ---
+    # --- AÇÕES (ACEITE / PIX) ---
     if status in ["Novo", "Aguardando Aprovação", "Rascunho"]:
         st.write("### 📝 Termos e Aceite")
-
         with st.expander("📄 Ler Contrato de Locação e Regras"):
             st.markdown("""
             **1. DA CONSERVAÇÃO:** O locatário declara receber os itens em perfeito estado.
@@ -166,72 +166,72 @@ def render_view_publica():
             """)
 
         aceite = st.checkbox("Li e concordo com os termos acima.")
-
         c_btn1, c_btn2 = st.columns(2)
 
         if c_btn2.button("❌ Pedir Alteração"):
+            # Usa get_secret para buscar o ZAP_ADMIN
+            zap_admin = get_secret('ZAP_ADMIN')
             msg_zap = f"Olá, vi o orçamento de R$ {subtotal} mas preciso alterar algumas coisas."
-            link_zap = f"https://api.whatsapp.com/send?phone=55{st.secrets.get('ZAP_ADMIN', '')}&text={urllib.parse.quote(msg_zap)}"
+            link_zap = f"https://api.whatsapp.com/send?phone=55{zap_admin}&text={urllib.parse.quote(msg_zap)}"
             st.link_button("Falar no WhatsApp", link_zap, use_container_width=True)
 
         if c_btn1.button("✅ APROVAR AGORA", type="primary", disabled=not aceite):
             with st.spinner("Registrando aceite..."):
-                # ALTERAÇÃO: Agora desempacota o erro
-                ok, msg_erro = PublicService.registrar_aceite(dados['id'], "IP_CLIENTE_MOBILE")
+                ok, msg_erro = PublicService.registrar_aceite(dados['id'], "IP_VIA_STREAMLIT")
                 if ok:
-                    st.rerun()  # Recarrega para mostrar o Pix
+                    st.rerun()
                 else:
-                    st.error(f"Erro ao registrar: {msg_erro}")
+                    st.error(f"Erro: {msg_erro}")
 
-    # --- TELA DE PAGAMENTO PIX ---
     elif status == "Aguardando Pagamento":
         st.markdown("---")
         st.subheader("🚀 Falta pouco! Faça o Pix do Sinal")
 
-        # Dados do Pix (Pega do Secrets ou usa Default)
-        chave_pix = st.secrets.get("PIX_KEY", "seu_email@teste.com")
-        nome_pix = st.secrets.get("PIX_NAME", "NT FESTAS")
-        cidade_pix = st.secrets.get("PIX_CITY", "Porto Alegre")
+        # Geração do Pix com as chaves centralizadas
+        if not PIX_KEY:
+            st.error("Chave Pix não configurada no sistema.")
+        else:
+            payload_copia_cola = PixService.gerar_payload_pix(
+                chave_pix=PIX_KEY,
+                beneficiario_nome=PIX_NAME,
+                beneficiario_cidade=PIX_CITY,
+                valor=sinal
+            )
 
-        # Gera o Código
-        payload_copia_cola = PixService.gerar_payload_pix(chave_pix, nome_pix, cidade_pix, sinal)
+            # QR Code
+            qr = segno.make_qr(payload_copia_cola)
+            buffer = io.BytesIO()
+            qr.save(buffer, kind='png', scale=5)
 
-        # Gera QR Code Imagem
-        qr = segno.make_qr(payload_copia_cola)
-        buffer = io.BytesIO()
-        qr.save(buffer, kind='png', scale=5)
-
-        c_pix1, c_pix2 = st.columns([1, 2])
-        with c_pix1:
-            st.image(buffer, caption="Escaneie no App do Banco")
-
-        with c_pix2:
-            st.info("Copie o código abaixo e use a opção **'Pix Copia e Cola'** no seu banco:")
-            st.code(payload_copia_cola, language="text")
+            c_pix1, c_pix2 = st.columns([1, 2])
+            with c_pix1:
+                st.image(buffer, caption="Escaneie no App do Banco")
+            with c_pix2:
+                st.info("Copie o código abaixo e use a opção **'Pix Copia e Cola'**:")
+                st.code(payload_copia_cola, language="text")
 
         st.markdown("---")
         st.write("### 📤 Já pagou?")
 
-        msg_comprovante = f"Olá! Acabei de pagar o sinal de R$ {sinal:.2f} do orçamento {dados['cliente_nome']}."
-        link_zap_comp = f"https://api.whatsapp.com/send?phone=55{st.secrets.get('ZAP_ADMIN', '')}&text={urllib.parse.quote(msg_comprovante)}"
+        zap_admin = get_secret('ZAP_ADMIN')
+        msg_comp = f"Olá! Acabei de pagar o sinal de R$ {sinal:.2f} do orçamento {dados['cliente_nome']}."
+        link_zap_comp = f"https://api.whatsapp.com/send?phone=55{zap_admin}&text={urllib.parse.quote(msg_comp)}"
+        st.link_button("📱 Enviar Comprovante", link_zap_comp, type="primary", use_container_width=True)
 
-        st.link_button("📱 Enviar Comprovante no WhatsApp", link_zap_comp, type="primary", use_container_width=True)
-
-        # --- Botão Download PDF ---
+        # Botão PDF (apenas disponível aqui no Streamlit, pois a API removeu essa feature para ficar leve)
         st.markdown("---")
         try:
-            pdf_path = PDFGenerator.gerar(pdf_dados_cli, pdf_dados_evt, itens_texto, subtotal, sinal, restante,
-                                          txt_retirada_display, txt_devolucao_display)
-            with open(pdf_path, "rb") as pdf_file:
-                pdf_bytes = pdf_file.read()
-            os.remove(pdf_path)
-
-            st.download_button(
-                label="📄 BAIXAR CONTRATO (PDF)",
-                data=pdf_bytes,
-                file_name=f"Contrato_{dados['id']}.pdf",
-                mime="application/pdf",
-                use_container_width=True
+            pdf_path = PDFGenerator.gerar(
+                pdf_dados_cli, pdf_dados_evt, itens_texto, subtotal, sinal, restante, txt_ret, txt_dev
             )
+            with open(pdf_path, "rb") as pdf_file:
+                st.download_button(
+                    label="📄 BAIXAR CONTRATO (PDF)",
+                    data=pdf_file,
+                    file_name=f"Contrato_{dados['id']}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+            os.remove(pdf_path)
         except Exception as e:
-            st.error(f"Erro ao gerar PDF: {e}")
+            st.warning(f"PDF indisponível no momento: {e}")
