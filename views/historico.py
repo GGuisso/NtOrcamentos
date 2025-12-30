@@ -1,6 +1,7 @@
 import streamlit as st
 import datetime
 import time
+import math
 import urllib.parse
 from datetime import date
 from services import SupabaseService
@@ -186,60 +187,89 @@ def carregar_orcamento_para_edicao(oid, dados):
 def render_historico():
     st.header("📂 Histórico de Pedidos")
 
-    # --- BOTÃO DE REFRESH ---
-    c_top1, c_top2 = st.columns([4, 1])
-    if c_top2.button("🔄 Atualizar Lista", use_container_width=True):
-        st.session_state['db_orcamentos'] = SupabaseService.carregar_orcamentos()
-        st.rerun()
-    # -------------------------------
+    # --- ESTADO DA PAGINAÇÃO E FILTROS ---
+    if 'hist_page' not in st.session_state:
+        st.session_state['hist_page'] = 1
 
-    db = st.session_state.get('db_orcamentos', [])
+    # Resetar página se trocar de filtro
+    def _reset_page():
+        st.session_state['hist_page'] = 1
 
-    if not db:
-        st.info("Nenhum orçamento encontrado.")
-        return
-
-    c_f1, c_f2 = st.columns(2)
-    busca = c_f1.text_input("🔍 Buscar Cliente ou ID")
+    # --- FILTROS NO TOPO ---
+    c_f1, c_f2 = st.columns([2, 2])
+    busca = c_f1.text_input("🔍 Buscar Cliente ou ID", on_change=_reset_page)
 
     opcoes_filtro = ["Aguardando Aprovação", "Aguardando Pagamento", "Reserva Confirmada", "Itens Retirados",
                      "Finalizado", "Cancelado", "Reprovado"]
-    filtro_st = c_f2.multiselect("Filtrar por Status", opcoes_filtro)
+    filtro_st = c_f2.multiselect("Filtrar por Status", opcoes_filtro, on_change=_reset_page)
 
-    lista = sorted(db, key=lambda x: str(x['id']), reverse=True)
-    if busca:
-        lista = [x for x in lista if busca.lower() in x['cliente'].lower() or str(x['id']) in busca]
-    if filtro_st:
-        lista = [x for x in lista if x.get('status') in filtro_st]
+    # --- CARREGAMENTO DE DADOS (Paginado) ---
+    ITENS_POR_PAGINA = 10
+    pagina_atual = st.session_state['hist_page']
 
-    for orc in lista:
-        with st.container(border=True):
-            status = orc.get('status', 'Aguardando Aprovação')
-            config = get_status_config(status)
+    with st.spinner("Carregando lista..."):
+        # Chama o novo serviço paginado
+        lista_orcamentos, total_items = SupabaseService.listar_orcamentos_paginado(
+            page=pagina_atual,
+            page_size=ITENS_POR_PAGINA,
+            busca=busca,
+            status_filtro=filtro_st
+        )
 
-            c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
+    # --- RENDERIZAÇÃO DA LISTA ---
+    if not lista_orcamentos:
+        st.info("Nenhum orçamento encontrado com estes filtros.")
+    else:
+        st.caption(f"Exibindo {len(lista_orcamentos)} de {total_items} registros encontrados.")
 
-            c1.markdown(f"**#{orc['id']} - {orc['cliente']}**")
-            c1.caption(f"📅 {orc['data_evento']} | 🎨 {orc.get('tema', '-')}")
+        for orc in lista_orcamentos:
+            with st.container(border=True):
+                status = orc.get('status', 'Aguardando Aprovação')
+                config = get_status_config(status)
 
-            c2.write(f"R$ {orc.get('total', 0):.2f}")
+                c1, c2, c3, c4 = st.columns([3, 2, 2, 2])
 
-            # Badge de Status colorido
-            c3.markdown(f":{config['cor']}[{config['icon']} **{status}**]")
+                c1.markdown(f"**#{orc['id']} - {orc['cliente']}**")
+                c1.caption(f"📅 {orc['data_evento']} | 🎨 {orc.get('tema', '-')}")
 
-            bts = c4.columns([1, 1, 1])
+                c2.write(f"R$ {orc.get('total', 0):.2f}")
+                c3.markdown(f":{config['cor']}[{config['icon']} **{status}**]")
 
-            pode_editar = (status in ["Aguardando Aprovação", "Aguardando Pagamento", "Rascunho"])
-            bts[0].button(
-                "✏️" if pode_editar else "👁️",
-                key=f"e_{orc['id']}",
-                on_click=carregar_orcamento_para_edicao,
-                args=(orc['id'], orc['dados_form']),
-                help="Ver detalhes ou Editar"
-            )
+                bts = c4.columns([1, 1, 1])
 
-            if bts[1].button("🔗", key=f"lk_{orc['id']}", help="Link do Cliente"):
-                dialog_compartilhar_link(orc)
+                # Lógica de botões (Mantida)
+                pode_editar = (status in ["Aguardando Aprovação", "Aguardando Pagamento", "Rascunho"])
 
-            if bts[2].button("🔄", key=f"st_{orc['id']}", help="Mudar Status"):
-                dialog_gerenciar_status(orc)
+                if bts[0].button("✏️" if pode_editar else "👁️", key=f"e_{orc['id']}", help="Ver/Editar"):
+                    carregar_orcamento_para_edicao(orc['id'], orc['dados_form'])
+                    st.rerun()
+
+                if bts[1].button("🔗", key=f"lk_{orc['id']}", help="Link Cliente"):
+                    dialog_compartilhar_link(orc)
+
+                if bts[2].button("🔄", key=f"st_{orc['id']}", help="Mudar Status"):
+                    dialog_gerenciar_status(orc)
+
+        # --- CONTROLES DE PAGINAÇÃO (RODAPÉ) ---
+        total_paginas = math.ceil(total_items / ITENS_POR_PAGINA)
+
+        if total_paginas > 1:
+            st.markdown("---")
+            c_p1, c_p2, c_p3 = st.columns([1, 2, 1])
+
+            with c_p1:
+                if pagina_atual > 1:
+                    if st.button("⬅️ Anterior", use_container_width=True):
+                        st.session_state['hist_page'] -= 1
+                        st.rerun()
+
+            with c_p2:
+                st.markdown(
+                    f"<div style='text-align: center'>Página <b>{pagina_atual}</b> de <b>{total_paginas}</b></div>",
+                    unsafe_allow_html=True)
+
+            with c_p3:
+                if pagina_atual < total_paginas:
+                    if st.button("Próxima ➡️", use_container_width=True):
+                        st.session_state['hist_page'] += 1
+                        st.rerun()

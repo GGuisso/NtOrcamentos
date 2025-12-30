@@ -193,6 +193,34 @@ class SupabaseService:
         return acervo_dict, categorias, kits_dict, detalhes, estoque_dict
 
     @staticmethod
+    def _montar_objeto_orcamento(row: Dict) -> Dict:
+        """Helper para padronizar a montagem do objeto orçamento."""
+        dados_form = row.get('dados_form_snapshot') or {}
+        tema_salvo = dados_form.get('in_tema', row.get('tema', '?'))
+
+        lista_itens_reais = []
+        if row.get('orcamento_itens'):
+            for oi in row['orcamento_itens']:
+                if oi.get('acervo') and oi.get('quantidade'):
+                    nome_item = oi['acervo']['nome']
+                    qtd = oi['quantidade']
+                    lista_itens_reais.extend([nome_item] * qtd)
+
+        return {
+            "id": row['id'],
+            "cliente": row['clientes']['nome'] if row['clientes'] else "Desconhecido",
+            "data_evento": row['data_evento'],
+            "status": row['status'],
+            "total": float(row['valor_total'] or 0.0),
+            "tema": tema_salvo,
+            "dados_form": dados_form,
+            "itens_reais_db": lista_itens_reais,
+            "picking_status": row.get('picking_status', {}) or {},
+            "link_uuid": row.get('link_uuid'),
+            "data_registro": row.get('created_at')
+        }
+
+    @staticmethod
     def carregar_orcamentos() -> List[Dict]:
         supabase = SupabaseService.get_client()
         tenant = st.session_state.get('tenant_id')
@@ -202,34 +230,44 @@ class SupabaseService:
             "*, clientes(nome), orcamento_itens(quantidade, acervo(nome))"
         ).eq("tenant_id", tenant).execute()
 
-        lista_final = []
-        for row in res.data:
-            dados_form = row.get('dados_form_snapshot') or {}
-            tema_salvo = dados_form.get('in_tema', row.get('tema', '?'))
+        return [SupabaseService._montar_objeto_orcamento(row) for row in res.data]
 
-            lista_itens_reais = []
-            if row.get('orcamento_itens'):
-                for oi in row['orcamento_itens']:
-                    if oi.get('acervo') and oi.get('quantidade'):
-                        nome_item = oi['acervo']['nome']
-                        qtd = oi['quantidade']
-                        lista_itens_reais.extend([nome_item] * qtd)
+    @staticmethod
+    def listar_orcamentos_paginado(page: int, page_size: int, busca: str = None, status_filtro: List[str] = None) -> \
+    Tuple[List[Dict], int]:
+        """Nova função com Paginação e Filtros via Banco de Dados."""
+        supabase = SupabaseService.get_client()
+        tenant = st.session_state.get('tenant_id')
+        if not tenant: return [], 0
 
-            orcamento_obj = {
-                "id": row['id'],
-                "cliente": row['clientes']['nome'] if row['clientes'] else "Desconhecido",
-                "data_evento": row['data_evento'],
-                "status": row['status'],
-                "total": float(row['valor_total'] or 0.0),
-                "tema": tema_salvo,
-                "dados_form": dados_form,
-                "itens_reais_db": lista_itens_reais,
-                "picking_status": row.get('picking_status', {}) or {},
-                "link_uuid": row.get('link_uuid'),
-                "data_registro": row.get('created_at')
-            }
-            lista_final.append(orcamento_obj)
-        return lista_final
+        # Query Base com count='exact' para sabermos o total de páginas
+        # Importante: usar clientes!inner para permitir filtro no nome do cliente se necessário
+        query = supabase.table("orcamentos").select(
+            "*, clientes!inner(nome), orcamento_itens(quantidade, acervo(nome))", count="exact"
+        ).eq("tenant_id", tenant)
+
+        # 1. Filtros
+        if status_filtro and len(status_filtro) > 0:
+            query = query.in_("status", status_filtro)
+
+        if busca:
+            # Se for número, busca por ID, senão por nome do cliente
+            if busca.isdigit():
+                query = query.eq("id", int(busca))
+            else:
+                query = query.ilike("clientes.nome", f"%{busca}%")
+
+        # 2. Ordenação e Paginação
+        start = (page - 1) * page_size
+        end = start + page_size - 1
+
+        # Ordenar por ID decrescente (mais recentes primeiro)
+        res = query.order("id", desc=True).range(start, end).execute()
+
+        lista_final = [SupabaseService._montar_objeto_orcamento(row) for row in res.data]
+        total_items = res.count if res.count is not None else 0
+
+        return lista_final, total_items
 
     @staticmethod
     def get_dataframe(tabela_virtual: str) -> pd.DataFrame:
