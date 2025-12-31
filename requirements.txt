@@ -6,6 +6,7 @@ supabase
 fpdf
 segno
 requests
+streamlit-calendar
 # --- Adições para a API ---
 fastapi
 uvicorn
