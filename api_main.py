@@ -1,4 +1,5 @@
 # api_main.py
+from datetime import date, timedelta, datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -143,3 +144,69 @@ def login_api(dados: LoginRequest):
         # Captura erros do Supabase (ex: AuthApiError)
         print(f"Erro Login: {e}")
         raise HTTPException(status_code=401, detail="Email ou senha incorretos.")
+
+
+# --- ROTA 6: KPIs do Dashboard (NOVA) ---
+@app.get("/api/dashboard/kpis")
+def get_dashboard_kpis(tenant_id: str):
+    supabase = SupabaseService.get_client()
+
+    try:
+        # Busca todos os orçamentos deste tenant
+        res = supabase.table("orcamentos").select("id, status, data_evento, valor_total, created_at").eq("tenant_id",
+                                                                                                         tenant_id).execute()
+        orcamentos = res.data
+
+        # Variáveis de cálculo
+        hoje = date.today()
+        faturamento_mes = 0.0
+        pipeline_valor = 0.0
+        qtd_festas_semana = 0
+        total_fechado = 0.0
+        qtd_fechado = 0
+        propostas_abertas = 0
+
+        status_fechado = ['Reserva Confirmada', 'Itens Retirados', 'Finalizado', 'Aguardando Pagamento']
+
+        for orc in orcamentos:
+            status = orc.get('status')
+            valor = float(orc.get('valor_total') or 0.0)
+
+            # Tratamento de Data
+            d_evento_str = orc.get('data_evento')
+            d_evento = None
+            if d_evento_str:
+                d_evento = datetime.strptime(d_evento_str, '%Y-%m-%d').date()
+
+            # 1. Faturamento Mês Atual (Status Fechado)
+            if status in status_fechado:
+                total_fechado += valor
+                qtd_fechado += 1
+                if d_evento and d_evento.month == hoje.month and d_evento.year == hoje.year:
+                    faturamento_mes += valor
+
+            # 2. Pipeline (Aguardando Aprovação)
+            if status == 'Aguardando Aprovação':
+                pipeline_valor += valor
+                propostas_abertas += 1
+
+            # 3. Festas na Semana (Próximos 7 dias)
+            if status in status_fechado and d_evento:
+                delta = (d_evento - hoje).days
+                if 0 <= delta <= 7:
+                    qtd_festas_semana += 1
+
+        # 4. Ticket Médio
+        ticket_medio = (total_fechado / qtd_fechado) if qtd_fechado > 0 else 0.0
+
+        return {
+            "faturamento": faturamento_mes,
+            "pipeline": pipeline_valor,
+            "pipeline_qtd": propostas_abertas,
+            "festas_semana": qtd_festas_semana,
+            "ticket_medio": ticket_medio
+        }
+
+    except Exception as e:
+        print(f"Erro KPI: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao calcular indicadores")
