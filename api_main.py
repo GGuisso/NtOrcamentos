@@ -5,30 +5,37 @@ from pydantic import BaseModel
 from typing import Optional
 import os
 
-# Importando os serviços da pasta refatorada
+# Importando os serviços
 from services.public_service import PublicService
 from services.pix_service import PixService
+from services.database_service import SupabaseService  # <--- Adicionado
 from services.config import PIX_KEY, PIX_NAME, PIX_CITY
 
 app = FastAPI(title="API Pública NT Festas")
 
-# Configuração de CORS (Permite que seu site Vercel acesse esta API)
+# Configuração de CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Em produção, troque "*" pela URL do seu Vercel
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
-# Modelo de dados para o Aceite
+# --- MODELOS DE DADOS ---
+
 class AceiteRequest(BaseModel):
     ip: str
     navegador: Optional[str] = None
 
 
-# --- ROTA 1: Health Check (Para o Render saber que está vivo) ---
+class LoginRequest(BaseModel):  # <--- Adicionado
+    email: str
+    password: str
+
+
+# --- ROTA 1: Health Check ---
 @app.get("/")
 def health_check():
     return {"status": "online", "service": "NT Festas API"}
@@ -51,12 +58,10 @@ def obter_orcamento(uuid: str):
 # --- ROTA 3: Registrar Aceite ---
 @app.post("/api/orcamento/{uuid}/aceite")
 def registrar_aceite(uuid: str, req: AceiteRequest):
-    # Verifica existência
     orcamento = PublicService.buscar_orcamento_uuid(uuid)
     if not orcamento:
         raise HTTPException(status_code=404, detail="Orçamento não encontrado.")
 
-    # Registra no banco
     sucesso, mensagem = PublicService.registrar_aceite(orcamento['id'], req.ip)
 
     if not sucesso:
@@ -72,14 +77,11 @@ def gerar_pix(uuid: str):
     if not orcamento:
         raise HTTPException(status_code=404, detail="Orçamento não encontrado.")
 
-    # Regra: 30% de Sinal
     valor_sinal = round(orcamento['total'] * 0.30, 2)
 
-    # Validação da Chave
     if not PIX_KEY:
         raise HTTPException(status_code=500, detail="Chave PIX não configurada no servidor.")
 
-    # Gera Payload
     payload = PixService.gerar_payload_pix(
         chave_pix=PIX_KEY,
         beneficiario_nome=PIX_NAME or "NT Festas",
@@ -92,3 +94,52 @@ def gerar_pix(uuid: str):
         "payload_pix": payload,
         "valor_sinal": valor_sinal
     }
+
+
+# --- ROTA 5: Login Administrativo (NOVA) ---
+@app.post("/api/auth/login")
+def login_api(dados: LoginRequest):
+    supabase = SupabaseService.get_client()
+    try:
+        # 1. Tenta autenticar no Auth do Supabase
+        response = supabase.auth.sign_in_with_password({
+            "email": dados.email,
+            "password": dados.password
+        })
+
+        if response.user and response.session:
+            user_id = response.user.id
+
+            # 2. Busca dados extras na tabela 'profiles' (Tenant, Role, Nome)
+            # Isso é importante para saber qual "loja" o usuário administra
+            res_profile = supabase.table("profiles").select("tenant_id, role, nome").eq("id", user_id).execute()
+
+            # Valores padrão caso não tenha perfil criado
+            nome = "Usuário"
+            role = "vendedor"
+            tenant_id = None
+
+            if res_profile.data:
+                profile = res_profile.data[0]
+                tenant_id = profile['tenant_id']
+                role = profile['role']
+                nome = profile.get('nome', 'Usuário')
+
+            # 3. Retorna tudo que o Frontend precisa
+            return {
+                "access_token": response.session.access_token,
+                "user": {
+                    "id": user_id,
+                    "email": dados.email,
+                    "nome": nome,
+                    "role": role,
+                    "tenant_id": tenant_id
+                }
+            }
+
+        raise HTTPException(status_code=401, detail="Credenciais inválidas")
+
+    except Exception as e:
+        # Captura erros do Supabase (ex: AuthApiError)
+        print(f"Erro Login: {e}")
+        raise HTTPException(status_code=401, detail="Email ou senha incorretos.")
