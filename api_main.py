@@ -273,3 +273,111 @@ def get_orcamentos_recentes(tenant_id: str):
     except Exception as e:
         print(f"Erro Lista Recentes: {e}")
         return []
+
+
+# --- MODELS PARA EDIÇÃO ---
+class ItemUpdate(BaseModel):
+    id: int  # ID do item no acervo
+    qtd: int
+    preco: float
+
+
+class OrcamentoUpdate(BaseModel):
+    status: str
+    itens: list[ItemUpdate]
+
+
+# --- ROTA 8: Buscar Detalhes Completos (Admin) ---
+@app.get("/api/admin/orcamento/{id}")
+def get_orcamento_admin(id: int):
+    supabase = AdminService.get_admin_client()
+    try:
+        # Busca orçamento + cliente + itens
+        res = supabase.table("orcamentos") \
+            .select("*, clientes(*), orcamento_itens(quantidade, preco_unitario_cobrado, acervo(*))") \
+            .eq("id", id).execute()
+
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Orçamento não encontrado")
+
+        row = res.data[0]
+
+        # Formata os itens para o frontend
+        itens = []
+        for i in row.get('orcamento_itens', []):
+            if i.get('acervo'):
+                itens.append({
+                    "id": i['acervo']['id'],
+                    "nome": i['acervo']['nome'],
+                    "foto": i['acervo'].get('foto_url'),
+                    "qtd": i['quantidade'],
+                    "preco": float(i['preco_unitario_cobrado'] or i['acervo']['preco_aluguel'])
+                })
+
+        return {
+            "id": row['id'],
+            "uuid": row['link_uuid'],
+            "status": row['status'],
+            "data_evento": row['data_evento'],
+            "cliente": row['clientes'],
+            "itens": itens,
+            "total": float(row['valor_total'] or 0),
+            "dados_form": row.get('dados_form_snapshot')
+        }
+    except Exception as e:
+        print(f"Erro Get Admin: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- ROTA 9: Listar Acervo (Para adicionar itens) ---
+@app.get("/api/admin/acervo")
+def get_acervo_simples(tenant_id: str):
+    supabase = AdminService.get_admin_client()
+    try:
+        res = supabase.table("acervo").select("id, nome, preco_aluguel, foto_url") \
+            .eq("tenant_id", tenant_id).eq("ativo", True).order("nome").execute()
+        return res.data
+    except Exception as e:
+        return []
+
+
+# --- ROTA 10: Salvar Alterações (Admin) ---
+@app.put("/api/admin/orcamento/{id}")
+def update_orcamento(id: int, dados: OrcamentoUpdate):
+    supabase = AdminService.get_admin_client()
+    try:
+        # 1. Calcula novo total
+        novo_total = sum([item.qtd * item.preco for item in dados.itens])
+
+        # 2. Atualiza cabeçalho do orçamento
+        supabase.table("orcamentos").update({
+            "status": dados.status,
+            "valor_total": novo_total,
+            "valor_itens": novo_total  # Simplificação para este exemplo
+        }).eq("id", id).execute()
+
+        # 3. Atualiza Itens (Estratégia: Deletar todos e recriar)
+        # Primeiro buscamos o tenant_id para garantir integridade
+        orc_atual = supabase.table("orcamentos").select("tenant_id").eq("id", id).execute()
+        tenant_id = orc_atual.data[0]['tenant_id']
+
+        supabase.table("orcamento_itens").delete().eq("orcamento_id", id).execute()
+
+        novos_itens = []
+        for item in dados.itens:
+            novos_itens.append({
+                "tenant_id": tenant_id,
+                "orcamento_id": id,
+                "item_acervo_id": item.id,
+                "quantidade": item.qtd,
+                "preco_unitario_cobrado": item.preco
+            })
+
+        if novos_itens:
+            supabase.table("orcamento_itens").insert(novos_itens).execute()
+
+        return {"status": "sucesso", "novo_total": novo_total}
+
+    except Exception as e:
+        print(f"Erro Update: {e}")
+        raise HTTPException(status_code=500, detail="Erro ao salvar alterações")
