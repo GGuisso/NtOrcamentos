@@ -5,15 +5,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 
-# Importando os serviços
+# --- IMPORTS DOS SERVIÇOS ---
 from services.public_service import PublicService
 from services.pix_service import PixService
 from services.database_service import SupabaseService
+from services.admin_service import AdminService  # <--- CRUCIAL para o Dashboard
 from services.config import PIX_KEY, PIX_NAME, PIX_CITY
 
 app = FastAPI(title="API Pública NT Festas")
 
-# Configuração de CORS (Permite acesso do Next.js e Vercel)
+# --- CONFIGURAÇÃO DE CORS ---
+# Permite que o Next.js (localhost:3000) e o Vercel acessem sua API
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,7 +25,7 @@ app.add_middleware(
 )
 
 
-# --- MODELOS DE DADOS ---
+# --- MODELOS DE DADOS (Pydantic) ---
 
 class AceiteRequest(BaseModel):
     ip: str
@@ -35,15 +37,27 @@ class LoginRequest(BaseModel):
     password: str
 
 
-# --- ROTA 1: Health Check ---
+# ==========================================
+#              ROTAS GERAIS
+# ==========================================
+
 @app.get("/")
 def health_check():
-    return {"status": "online", "service": "NT Festas API", "server_time": str(date.today())}
+    """Rota para verificar se a API está online no Render."""
+    return {
+        "status": "online",
+        "service": "NT Festas API",
+        "server_date": str(date.today())
+    }
 
 
-# --- ROTA 2: Buscar Dados do Orçamento (Público) ---
+# ==========================================
+#           ROTAS PÚBLICAS (CLIENTE FINAL)
+# ==========================================
+
 @app.get("/api/orcamento/{uuid}")
 def obter_orcamento(uuid: str):
+    """Busca os dados do orçamento pelo UUID do link público."""
     dados = PublicService.buscar_orcamento_uuid(uuid)
 
     if not dados:
@@ -55,9 +69,9 @@ def obter_orcamento(uuid: str):
     return dados
 
 
-# --- ROTA 3: Registrar Aceite (Público) ---
 @app.post("/api/orcamento/{uuid}/aceite")
 def registrar_aceite(uuid: str, req: AceiteRequest):
+    """Registra o aceite dos termos pelo cliente."""
     orcamento = PublicService.buscar_orcamento_uuid(uuid)
     if not orcamento:
         raise HTTPException(status_code=404, detail="Orçamento não encontrado.")
@@ -70,9 +84,9 @@ def registrar_aceite(uuid: str, req: AceiteRequest):
     return {"status": "sucesso", "mensagem": "Termos aceitos!"}
 
 
-# --- ROTA 4: Gerar Pix (Público) ---
 @app.get("/api/orcamento/{uuid}/pix")
 def gerar_pix(uuid: str):
+    """Gera o payload Pix Copia e Cola para o sinal (30%)."""
     orcamento = PublicService.buscar_orcamento_uuid(uuid)
     if not orcamento:
         raise HTTPException(status_code=404, detail="Orçamento não encontrado.")
@@ -96,12 +110,16 @@ def gerar_pix(uuid: str):
     }
 
 
-# --- ROTA 5: Login Administrativo (Dashboard) ---
+# ==========================================
+#           ROTAS ADMIN (DASHBOARD)
+# ==========================================
+
 @app.post("/api/auth/login")
 def login_api(dados: LoginRequest):
-    supabase = SupabaseService.get_client()
+    """Realiza o login administrativo e retorna o token + dados do usuário."""
+    supabase = SupabaseService.get_client()  # Usa cliente padrão para Auth
     try:
-        # 1. Autenticação
+        # 1. Autenticação no Supabase Auth
         response = supabase.auth.sign_in_with_password({
             "email": dados.email,
             "password": dados.password
@@ -110,7 +128,9 @@ def login_api(dados: LoginRequest):
         if response.user and response.session:
             user_id = response.user.id
 
-            # 2. Busca Perfil (Tenant)
+            # 2. Busca dados do perfil (Tenant/Loja)
+            # Tenta buscar com o cliente logado, se falhar por RLS, o AdminService seria opção,
+            # mas geralmente o próprio usuário pode ler seu perfil.
             res_profile = supabase.table("profiles").select("tenant_id, role, nome").eq("id", user_id).execute()
 
             nome = "Usuário"
@@ -123,7 +143,7 @@ def login_api(dados: LoginRequest):
                 role = profile['role']
                 nome = profile.get('nome', 'Usuário')
 
-            # 3. Retorno
+            # 3. Retorna Token e Objeto User
             return {
                 "access_token": response.session.access_token,
                 "user": {
@@ -142,26 +162,28 @@ def login_api(dados: LoginRequest):
         raise HTTPException(status_code=401, detail="Email ou senha incorretos.")
 
 
-# --- ROTA 6: KPIs do Dashboard (AJUSTADA) ---
 @app.get("/api/dashboard/kpis")
 def get_dashboard_kpis(tenant_id: str, mes: Optional[int] = None, ano: Optional[int] = None):
-    supabase = SupabaseService.get_client()
+    """Calcula os indicadores do dashboard. Usa AdminService para bypass de RLS."""
+
+    # ATENÇÃO: Usando AdminService para garantir leitura dos dados
+    supabase = AdminService.get_admin_client()
 
     try:
-        # Define filtro de data (se não passado, usa hoje)
+        # Define filtro de data (se não passado, usa data de hoje)
         hoje = date.today()
         filtro_mes = mes if mes else hoje.month
         filtro_ano = ano if ano else hoje.year
 
-        # Busca orçamentos
+        # Busca orçamentos do tenant
         res = supabase.table("orcamentos").select("id, status, data_evento, valor_total").eq("tenant_id",
                                                                                              tenant_id).execute()
 
         # Inicializa contadores
         kpis = {
-            "faturamento": 0.0,  # Específico do mês/ano filtrado
-            "faturamento_geral": 0.0,  # Total acumulado (lifetime)
-            "pipeline": 0.0,
+            "faturamento": 0.0,  # Específico do mês/ano filtrado (ex: Jan/2025)
+            "faturamento_geral": 0.0,  # Total acumulado histórico (ex: Inclui 2026)
+            "pipeline": 0.0,  # Orçamentos aguardando aprovação
             "pipeline_qtd": 0,
             "festas_semana": 0,
             "ticket_medio": 0.0
@@ -183,19 +205,19 @@ def get_dashboard_kpis(tenant_id: str, mes: Optional[int] = None, ano: Optional[
                 except:
                     pass
 
-            # 1. Pipeline (Aguardando Aprovação)
+            # 1. Pipeline (Aguardando Aprovação - Independe de data)
             if status == 'Aguardando Aprovação':
                 kpis["pipeline"] += valor
                 kpis["pipeline_qtd"] += 1
 
-            # 2. Dados de Fechamento
+            # 2. Dados de Fechamento (Faturamento)
             if status in status_fechado:
-                # Acumula no Geral (Independente da data)
+                # Acumula no Geral (LIFETIME)
                 kpis["faturamento_geral"] += valor
                 total_fechado_valor += valor
                 total_fechado_qtd += 1
 
-                # Acumula no Mensal (Se bater a data)
+                # Acumula no Mensal (Se bater a data do filtro)
                 if d_evento and d_evento.month == filtro_mes and d_evento.year == filtro_ano:
                     kpis["faturamento"] += valor
 
@@ -205,7 +227,7 @@ def get_dashboard_kpis(tenant_id: str, mes: Optional[int] = None, ano: Optional[
                     if 0 <= delta <= 7:
                         kpis["festas_semana"] += 1
 
-        # 4. Ticket Médio
+        # 4. Cálculo do Ticket Médio
         if total_fechado_qtd > 0:
             kpis["ticket_medio"] = total_fechado_valor / total_fechado_qtd
 
@@ -213,13 +235,17 @@ def get_dashboard_kpis(tenant_id: str, mes: Optional[int] = None, ano: Optional[
 
     except Exception as e:
         print(f"Erro KPI: {e}")
-        raise HTTPException(status_code=500, detail="Erro ao calcular indicadores")
+        # Retorna erro 500 se falhar a conexão ou cálculo
+        raise HTTPException(status_code=500, detail=f"Erro ao calcular indicadores: {str(e)}")
 
 
-# --- ROTA 7: Listar Orçamentos Recentes (Dashboard) ---
 @app.get("/api/dashboard/recentes")
 def get_orcamentos_recentes(tenant_id: str):
-    supabase = SupabaseService.get_client()
+    """Lista os 5 últimos orçamentos. Usa AdminService para bypass de RLS."""
+
+    # ATENÇÃO: Usando AdminService para garantir leitura dos dados
+    supabase = AdminService.get_admin_client()
+
     try:
         # Busca os 5 últimos
         res = supabase.table("orcamentos") \
@@ -232,6 +258,7 @@ def get_orcamentos_recentes(tenant_id: str):
         dados_formatados = []
         for row in res.data:
             cliente_nome = row['clientes']['nome'] if row['clientes'] else "Desconhecido"
+
             dados_formatados.append({
                 "id": row['id'],
                 "cliente": cliente_nome,
