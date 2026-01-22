@@ -1,20 +1,19 @@
 # api_main.py
-from datetime import date, timedelta, datetime
+from datetime import date, datetime
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
-import os
 
 # Importando os serviços
 from services.public_service import PublicService
 from services.pix_service import PixService
-from services.database_service import SupabaseService  # <--- Adicionado
+from services.database_service import SupabaseService
 from services.config import PIX_KEY, PIX_NAME, PIX_CITY
 
 app = FastAPI(title="API Pública NT Festas")
 
-# Configuração de CORS
+# Configuração de CORS (Permite acesso do Next.js e Vercel)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,7 +30,7 @@ class AceiteRequest(BaseModel):
     navegador: Optional[str] = None
 
 
-class LoginRequest(BaseModel):  # <--- Adicionado
+class LoginRequest(BaseModel):
     email: str
     password: str
 
@@ -39,10 +38,10 @@ class LoginRequest(BaseModel):  # <--- Adicionado
 # --- ROTA 1: Health Check ---
 @app.get("/")
 def health_check():
-    return {"status": "online", "service": "NT Festas API"}
+    return {"status": "online", "service": "NT Festas API", "server_time": str(date.today())}
 
 
-# --- ROTA 2: Buscar Dados do Orçamento ---
+# --- ROTA 2: Buscar Dados do Orçamento (Público) ---
 @app.get("/api/orcamento/{uuid}")
 def obter_orcamento(uuid: str):
     dados = PublicService.buscar_orcamento_uuid(uuid)
@@ -56,7 +55,7 @@ def obter_orcamento(uuid: str):
     return dados
 
 
-# --- ROTA 3: Registrar Aceite ---
+# --- ROTA 3: Registrar Aceite (Público) ---
 @app.post("/api/orcamento/{uuid}/aceite")
 def registrar_aceite(uuid: str, req: AceiteRequest):
     orcamento = PublicService.buscar_orcamento_uuid(uuid)
@@ -71,7 +70,7 @@ def registrar_aceite(uuid: str, req: AceiteRequest):
     return {"status": "sucesso", "mensagem": "Termos aceitos!"}
 
 
-# --- ROTA 4: Gerar Pix ---
+# --- ROTA 4: Gerar Pix (Público) ---
 @app.get("/api/orcamento/{uuid}/pix")
 def gerar_pix(uuid: str):
     orcamento = PublicService.buscar_orcamento_uuid(uuid)
@@ -97,12 +96,12 @@ def gerar_pix(uuid: str):
     }
 
 
-# --- ROTA 5: Login Administrativo (NOVA) ---
+# --- ROTA 5: Login Administrativo (Dashboard) ---
 @app.post("/api/auth/login")
 def login_api(dados: LoginRequest):
     supabase = SupabaseService.get_client()
     try:
-        # 1. Tenta autenticar no Auth do Supabase
+        # 1. Autenticação
         response = supabase.auth.sign_in_with_password({
             "email": dados.email,
             "password": dados.password
@@ -111,11 +110,9 @@ def login_api(dados: LoginRequest):
         if response.user and response.session:
             user_id = response.user.id
 
-            # 2. Busca dados extras na tabela 'profiles' (Tenant, Role, Nome)
-            # Isso é importante para saber qual "loja" o usuário administra
+            # 2. Busca Perfil (Tenant)
             res_profile = supabase.table("profiles").select("tenant_id, role, nome").eq("id", user_id).execute()
 
-            # Valores padrão caso não tenha perfil criado
             nome = "Usuário"
             role = "vendedor"
             tenant_id = None
@@ -126,7 +123,7 @@ def login_api(dados: LoginRequest):
                 role = profile['role']
                 nome = profile.get('nome', 'Usuário')
 
-            # 3. Retorna tudo que o Frontend precisa
+            # 3. Retorno
             return {
                 "access_token": response.session.access_token,
                 "user": {
@@ -141,71 +138,78 @@ def login_api(dados: LoginRequest):
         raise HTTPException(status_code=401, detail="Credenciais inválidas")
 
     except Exception as e:
-        # Captura erros do Supabase (ex: AuthApiError)
         print(f"Erro Login: {e}")
         raise HTTPException(status_code=401, detail="Email ou senha incorretos.")
 
 
-# --- ROTA 6: KPIs do Dashboard (NOVA) ---
+# --- ROTA 6: KPIs do Dashboard (AJUSTADA) ---
 @app.get("/api/dashboard/kpis")
-def get_dashboard_kpis(tenant_id: str):
+def get_dashboard_kpis(tenant_id: str, mes: Optional[int] = None, ano: Optional[int] = None):
     supabase = SupabaseService.get_client()
 
     try:
-        # Busca todos os orçamentos deste tenant
-        res = supabase.table("orcamentos").select("id, status, data_evento, valor_total, created_at").eq("tenant_id",
-                                                                                                         tenant_id).execute()
-        orcamentos = res.data
-
-        # Variáveis de cálculo
+        # Define filtro de data (se não passado, usa hoje)
         hoje = date.today()
-        faturamento_mes = 0.0
-        pipeline_valor = 0.0
-        qtd_festas_semana = 0
-        total_fechado = 0.0
-        qtd_fechado = 0
-        propostas_abertas = 0
+        filtro_mes = mes if mes else hoje.month
+        filtro_ano = ano if ano else hoje.year
 
+        # Busca orçamentos
+        res = supabase.table("orcamentos").select("id, status, data_evento, valor_total").eq("tenant_id",
+                                                                                             tenant_id).execute()
+
+        # Inicializa contadores
+        kpis = {
+            "faturamento": 0.0,  # Específico do mês/ano filtrado
+            "faturamento_geral": 0.0,  # Total acumulado (lifetime)
+            "pipeline": 0.0,
+            "pipeline_qtd": 0,
+            "festas_semana": 0,
+            "ticket_medio": 0.0
+        }
+
+        total_fechado_valor = 0.0
+        total_fechado_qtd = 0
         status_fechado = ['Reserva Confirmada', 'Itens Retirados', 'Finalizado', 'Aguardando Pagamento']
 
-        for orc in orcamentos:
-            status = orc.get('status')
+        for orc in res.data:
             valor = float(orc.get('valor_total') or 0.0)
+            status = orc.get('status')
 
-            # Tratamento de Data
-            d_evento_str = orc.get('data_evento')
+            # Converte data com segurança
             d_evento = None
-            if d_evento_str:
-                d_evento = datetime.strptime(d_evento_str, '%Y-%m-%d').date()
+            if orc.get('data_evento'):
+                try:
+                    d_evento = datetime.strptime(orc['data_evento'], '%Y-%m-%d').date()
+                except:
+                    pass
 
-            # 1. Faturamento Mês Atual (Status Fechado)
-            if status in status_fechado:
-                total_fechado += valor
-                qtd_fechado += 1
-                if d_evento and d_evento.month == hoje.month and d_evento.year == hoje.year:
-                    faturamento_mes += valor
-
-            # 2. Pipeline (Aguardando Aprovação)
+            # 1. Pipeline (Aguardando Aprovação)
             if status == 'Aguardando Aprovação':
-                pipeline_valor += valor
-                propostas_abertas += 1
+                kpis["pipeline"] += valor
+                kpis["pipeline_qtd"] += 1
 
-            # 3. Festas na Semana (Próximos 7 dias)
-            if status in status_fechado and d_evento:
-                delta = (d_evento - hoje).days
-                if 0 <= delta <= 7:
-                    qtd_festas_semana += 1
+            # 2. Dados de Fechamento
+            if status in status_fechado:
+                # Acumula no Geral (Independente da data)
+                kpis["faturamento_geral"] += valor
+                total_fechado_valor += valor
+                total_fechado_qtd += 1
+
+                # Acumula no Mensal (Se bater a data)
+                if d_evento and d_evento.month == filtro_mes and d_evento.year == filtro_ano:
+                    kpis["faturamento"] += valor
+
+                # 3. Festas na Semana (Baseado na data real de hoje)
+                if d_evento:
+                    delta = (d_evento - hoje).days
+                    if 0 <= delta <= 7:
+                        kpis["festas_semana"] += 1
 
         # 4. Ticket Médio
-        ticket_medio = (total_fechado / qtd_fechado) if qtd_fechado > 0 else 0.0
+        if total_fechado_qtd > 0:
+            kpis["ticket_medio"] = total_fechado_valor / total_fechado_qtd
 
-        return {
-            "faturamento": faturamento_mes,
-            "pipeline": pipeline_valor,
-            "pipeline_qtd": propostas_abertas,
-            "festas_semana": qtd_festas_semana,
-            "ticket_medio": ticket_medio
-        }
+        return kpis
 
     except Exception as e:
         print(f"Erro KPI: {e}")
@@ -217,7 +221,7 @@ def get_dashboard_kpis(tenant_id: str):
 def get_orcamentos_recentes(tenant_id: str):
     supabase = SupabaseService.get_client()
     try:
-        # Busca os 5 últimos orçamentos, incluindo o nome do cliente
+        # Busca os 5 últimos
         res = supabase.table("orcamentos") \
             .select("id, status, data_evento, valor_total, link_uuid, clientes(nome)") \
             .eq("tenant_id", tenant_id) \
