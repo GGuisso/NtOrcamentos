@@ -210,3 +210,35 @@ def get_dashboard_kpis(tenant_id: str):
     except Exception as e:
         print(f"Erro KPI: {e}")
         raise HTTPException(status_code=500, detail="Erro ao calcular indicadores")
+
+
+# --- ROTA 7: Listar Orçamentos Recentes (Dashboard) ---
+@app.get("/api/dashboard/recentes")
+def get_orcamentos_recentes(tenant_id: str):
+    supabase = SupabaseService.get_client()
+    try:
+        # Busca os 5 últimos orçamentos, incluindo o nome do cliente
+        res = supabase.table("orcamentos") \
+            .select("id, status, data_evento, valor_total, link_uuid, clientes(nome)") \
+            .eq("tenant_id", tenant_id) \
+            .order("created_at", desc=True) \
+            .limit(5) \
+            .execute()
+
+        dados_formatados = []
+        for row in res.data:
+            cliente_nome = row['clientes']['nome'] if row['clientes'] else "Desconhecido"
+            dados_formatados.append({
+                "id": row['id'],
+                "cliente": cliente_nome,
+                "data_evento": row['data_evento'],
+                "status": row['status'],
+                "total": float(row['valor_total'] or 0),
+                "uuid": row['link_uuid']
+            })
+
+        return dados_formatados
+
+    except Exception as e:
+        print(f"Erro Lista Recentes: {e}")
+        return []
